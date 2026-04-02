@@ -61,15 +61,33 @@ def find_swing_highs(candles: list[dict], lookback: int = 5) -> list[dict]:
 
 def is_fresh(swing_index: int, total_candles: int, min_candles: int = LIQUIDITY_CANDLES_MIN) -> bool:
     """
-    Zona dianggap fresh jika belum tersentuh minimal
-    LIQUIDITY_CANDLES_MIN candle 4H dari posisi swing ke candle terakhir.
+    Zona dianggap fresh jika terbentuk minimal LIQUIDITY_CANDLES_MIN candle yang lalu.
     """
     candles_since = total_candles - 1 - swing_index
     return candles_since >= min_candles
 
+def is_mitigated(swing: dict, candles: list[dict], zone_type: str) -> bool:
+    """
+    Zona dianggap mitigated (tidak fresh) jika setelah swing terbentuk,
+    harga pernah kembali menyentuh level tersebut.
+    - LONG (swing low): ada candle berikutnya yang low-nya <= pivot + buffer
+    - SHORT (swing high): ada candle berikutnya yang high-nya >= pivot - buffer
+    """
+    idx    = swing["index"]
+    price  = swing["price"]
+    buffer = price * TOUCH_THRESHOLD_PCT
+
+    for c in candles[idx + 1:]:
+        if zone_type == "LONG" and c["low"] <= price + buffer:
+            return True
+        if zone_type == "SHORT" and c["high"] >= price - buffer:
+            return True
+    return False
+
 def get_fresh_liquidity_zones(pair: str) -> dict:
     """
     Ambil zona liquidity fresh dari TF 4H.
+    Fresh = terbentuk ≥ LIQUIDITY_CANDLES_MIN candle lalu DAN belum pernah dikunjungi lagi.
     Return: dict berisi list zona LONG (swing low) dan SHORT (swing high).
     """
     candles = get_candles(pair, TF_ZONE, limit=SWING_LOOKBACK + 20)
@@ -78,8 +96,10 @@ def get_fresh_liquidity_zones(pair: str) -> dict:
     swing_lows  = find_swing_lows(candles, lookback=5)
     swing_highs = find_swing_highs(candles, lookback=5)
 
-    fresh_lows  = [s for s in swing_lows  if is_fresh(s["index"], total)]
-    fresh_highs = [s for s in swing_highs if is_fresh(s["index"], total)]
+    fresh_lows  = [s for s in swing_lows
+                   if is_fresh(s["index"], total) and not is_mitigated(s, candles, "LONG")]
+    fresh_highs = [s for s in swing_highs
+                   if is_fresh(s["index"], total) and not is_mitigated(s, candles, "SHORT")]
 
     # Zona = area sekitar swing (±0.5% untuk toleransi)
     long_zones  = [{"low": s["price"] * 0.995, "high": s["price"] * 1.005,
