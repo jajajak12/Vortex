@@ -77,15 +77,13 @@ def scan_pair(pair: str):
                         rejection = check_rejection_short(candles_5m, zone)
 
                     if rejection and rejection["confirmed"]:
-                        # Cari liquidity sebelumnya untuk SL
-                        # Ambil pivot zona sebelumnya (zona paling dekat di bawah/atas)
                         other_zones = zones["LONG"] if direction == "LONG" else zones["SHORT"]
                         prev_liquidity = _find_prev_liquidity(zone, other_zones, direction)
 
                         trade = calculate_trade(
                             direction=direction,
                             entry=rejection["entry_price"],
-                            zone_pivot=zone["pivot"],
+                            zone=zone,
                             prev_liquidity_price=prev_liquidity
                         )
 

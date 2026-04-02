@@ -177,19 +177,19 @@ def check_rejection_short(candles_5m: list[dict], zone: dict) -> dict | None:
             }
     return None
 
-def calculate_trade(direction: str, entry: float, zone_pivot: float,
+def calculate_trade(direction: str, entry: float, zone: dict,
                     prev_liquidity_price: float) -> dict:
     """
-    Hitung SL dan TP berdasarkan rules:
-    - SL: di bawah/atas fresh liquidity sebelumnya
-    - TP: 1:1 dengan SL (RR = 1:1)
+    Hitung SL dan TP:
+    - SL: tepat di luar batas zona rejection (bukan zona lain yang jauh)
+    - TP: 1:1 RR dari SL distance
     """
     if direction == "LONG":
-        sl      = prev_liquidity_price * 0.998  # Sedikit di bawah liquidity sebelumnya
+        sl      = zone["low"] * 0.998   # sedikit di bawah low zona
         sl_dist = entry - sl
         tp      = entry + sl_dist
     else:  # SHORT
-        sl      = prev_liquidity_price * 1.002
+        sl      = zone["high"] * 1.002  # sedikit di atas high zona
         sl_dist = sl - entry
         tp      = entry - sl_dist
 
