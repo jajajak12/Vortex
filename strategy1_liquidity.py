@@ -92,13 +92,10 @@ def get_fresh_liquidity_zones(pair: str) -> dict:
 def is_touching_zone(current_price: float, zone: dict) -> bool:
     """
     Cek apakah harga saat ini menyentuh zona liquidity.
-    Toleransi: TOUCH_THRESHOLD_PCT dari batas zona.
+    Harga harus berada di dalam [low - buffer, high + buffer].
     """
     buffer = zone["pivot"] * TOUCH_THRESHOLD_PCT
-    if zone["type"] == "LONG":
-        return current_price <= zone["high"] + buffer
-    else:  # SHORT
-        return current_price >= zone["low"] - buffer
+    return (zone["low"] - buffer) <= current_price <= (zone["high"] + buffer)
 
 def check_volume_spike(candles: list[dict], index: int, window: int = 20) -> bool:
     """Cek apakah volume candle[index] >= 1.5x rata-rata volume sebelumnya."""

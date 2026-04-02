@@ -11,7 +11,8 @@ from strategy1_liquidity import (
     check_rejection_short,
     calculate_trade,
 )
-from telegram_bot import alert_touch, alert_entry, alert_info
+from telegram_bot import alert_touch, alert_entry, alert_result, alert_stats, alert_info
+from trade_tracker import log_signal, update_trades_for_pair, get_stats
 
 # ── State tracker ────────────────────────────────────────────
 # Mencegah alert duplikat untuk zona yang sama
@@ -41,6 +42,12 @@ def scan_pair(pair: str):
         # 2. Ambil harga terkini dari candle 30m terakhir
         candles_30m = get_candles(pair, "30m", limit=5)
         current_price = candles_30m[-1]["close"]
+
+        # Cek apakah ada open trade yang sudah hit TP/SL
+        closed_trades = update_trades_for_pair(pair, current_price)
+        for ct in closed_trades:
+            print(f"[{datetime.now().strftime('%H:%M:%S')}] {'✅ WIN' if ct['result'] == 'WIN' else '❌ LOSS'}: {pair} {ct['direction']} | Close={ct['close_price']}")
+            alert_result(ct)
 
         for zone in all_zones:
             ckey = cooldown_key(pair, zone)
@@ -93,6 +100,7 @@ def scan_pair(pair: str):
                             tp=trade["tp"],
                             rr=trade["rr"]
                         )
+                        log_signal(pair, direction, trade["entry"], trade["sl"], trade["tp"])
                         alerted_entry[ckey] = time.time()
 
     except Exception as e:
@@ -129,6 +137,9 @@ def run_scanner():
         f"Interval: {SCAN_INTERVAL_SECONDS}s"
     )
 
+    scan_count = 0
+    STATS_EVERY = 60  # kirim winrate setiap ~1 jam (60 x 60s)
+
     while True:
         scan_start = time.time()
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Scanning {len(CRYPTO_PAIRS)} pairs...")
@@ -136,6 +147,12 @@ def run_scanner():
         for pair in CRYPTO_PAIRS:
             scan_pair(pair)
             time.sleep(0.3)  # Rate limit Binance API
+
+        scan_count += 1
+        if scan_count % STATS_EVERY == 0:
+            stats = get_stats()
+            print(f"[STATS] Total={stats['total']} Win={stats['wins']} Loss={stats['losses']} WR={stats['winrate']}% Open={stats['open']}")
+            alert_stats(stats)
 
         elapsed = time.time() - scan_start
         sleep_time = max(0, SCAN_INTERVAL_SECONDS - elapsed)
