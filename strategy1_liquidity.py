@@ -17,6 +17,7 @@ TF_MAP = {
     "1h":  Client.KLINE_INTERVAL_1HOUR,
     "4h":  Client.KLINE_INTERVAL_4HOUR,
     "1d":  Client.KLINE_INTERVAL_1DAY,
+    "1w":  Client.KLINE_INTERVAL_1WEEK,
 }
 
 def get_candles(pair: str, tf: str, limit: int = 100) -> list[dict]:
@@ -84,11 +85,25 @@ def is_mitigated(swing: dict, candles: list[dict], zone_type: str) -> bool:
             return True
     return False
 
+def _compute_htf_bias(candles: list[dict]) -> str:
+    """
+    Trend bias dari EMA50 — pakai candle 4H yang sudah ada, tanpa API call tambahan.
+    Return 'LONG' jika close > EMA50, 'SHORT' jika sebaliknya.
+    """
+    if len(candles) < 50:
+        return "LONG"
+    closes = [c["close"] for c in candles]
+    k   = 2 / (50 + 1)
+    ema = sum(closes[:50]) / 50
+    for price in closes[50:]:
+        ema = price * k + ema * (1 - k)
+    return "LONG" if candles[-1]["close"] > ema else "SHORT"
+
 def get_fresh_liquidity_zones(pair: str) -> dict:
     """
     Ambil zona liquidity fresh dari TF 4H.
     Fresh = terbentuk ≥ LIQUIDITY_CANDLES_MIN candle lalu DAN belum pernah dikunjungi lagi.
-    Return: dict berisi list zona LONG (swing low) dan SHORT (swing high).
+    Return: dict berisi list zona LONG, SHORT, dan htf_bias (EMA50 4H).
     """
     candles = get_candles(pair, TF_ZONE, limit=SWING_LOOKBACK + 20)
     total   = len(candles)
@@ -107,7 +122,7 @@ def get_fresh_liquidity_zones(pair: str) -> dict:
     short_zones = [{"low": s["price"] * 0.995, "high": s["price"] * 1.005,
                     "pivot": s["price"], "type": "SHORT"} for s in fresh_highs]
 
-    return {"LONG": long_zones, "SHORT": short_zones}
+    return {"LONG": long_zones, "SHORT": short_zones, "htf_bias": _compute_htf_bias(candles)}
 
 def is_touching_zone(current_price: float, zone: dict) -> bool:
     """
@@ -126,55 +141,72 @@ def check_volume_spike(candles: list[dict], index: int, window: int = 20) -> boo
 
 def check_rejection_long(candles_5m: list[dict], zone: dict) -> dict | None:
     """
-    Cek rejection LONG di TF 5m:
-    - Candle menembus bawah zona (low < zone.low)
-    - Candle CLOSE kembali di atas zona (close > zone.low)
-    → False breakout = liquidity grab confirmed
+    Cek rejection LONG di TF 5m dengan 2-candle confirmation:
+    1. Rejection: spike bawah zona + close kembali masuk dengan strength ≥30% zona
+    2. Konfirmasi: candle berikutnya harus close bullish
+    Entry di open candle setelah konfirmasi.
     """
-    if len(candles_5m) < 3:
+    if len(candles_5m) < 4:
         return None
 
-    # Cek 3 candle terakhir (exclude candle yang masih berjalan)
-    for i in range(len(candles_5m) - 3, len(candles_5m) - 1):
-        c = candles_5m[i]
-        broke_below = c["low"]   < zone["low"]
-        recovered   = c["close"] > zone["low"]
-        vol_spike   = check_volume_spike(candles_5m, i)
+    zone_size    = zone["high"] - zone["low"]
+    min_recovery = zone["low"] + zone_size * 0.3  # close minimal 30% masuk zona
 
-        if broke_below and recovered:
-            return {
-                "confirmed": True,
-                "candle_index": i,
-                "entry_price": candles_5m[i + 1]["open"] if i + 1 < len(candles_5m) else c["close"],
-                "rejection_low": c["low"],
-                "volume_spike": vol_spike
-            }
+    for i in range(len(candles_5m) - 4, len(candles_5m) - 2):
+        c = candles_5m[i]
+        broke_below    = c["low"]   < zone["low"]
+        strong_recover = c["close"] >= min_recovery
+        vol_spike      = check_volume_spike(candles_5m, i)
+
+        if not (broke_below and strong_recover):
+            continue
+
+        conf = candles_5m[i + 1]
+        if conf["close"] <= conf["open"]:  # konfirmasi harus bullish
+            continue
+
+        return {
+            "confirmed":     True,
+            "candle_index":  i,
+            "entry_price":   candles_5m[i + 2]["open"],
+            "rejection_low": c["low"],
+            "volume_spike":  vol_spike
+        }
     return None
 
 def check_rejection_short(candles_5m: list[dict], zone: dict) -> dict | None:
     """
-    Cek rejection SHORT di TF 5m:
-    - Candle menembus atas zona (high > zone.high)
-    - Candle CLOSE kembali di bawah zona (close < zone.high)
-    → False breakout = liquidity grab confirmed
+    Cek rejection SHORT di TF 5m dengan 2-candle confirmation:
+    1. Rejection: spike atas zona + close kembali masuk dengan strength ≥30% zona
+    2. Konfirmasi: candle berikutnya harus close bearish
+    Entry di open candle setelah konfirmasi.
     """
-    if len(candles_5m) < 3:
+    if len(candles_5m) < 4:
         return None
 
-    for i in range(len(candles_5m) - 3, len(candles_5m) - 1):
-        c = candles_5m[i]
-        broke_above = c["high"]  > zone["high"]
-        recovered   = c["close"] < zone["high"]
-        vol_spike   = check_volume_spike(candles_5m, i)
+    zone_size    = zone["high"] - zone["low"]
+    max_recovery = zone["high"] - zone_size * 0.3  # close minimal 30% masuk zona
 
-        if broke_above and recovered:
-            return {
-                "confirmed": True,
-                "candle_index": i,
-                "entry_price": candles_5m[i + 1]["open"] if i + 1 < len(candles_5m) else c["close"],
-                "rejection_high": c["high"],
-                "volume_spike": vol_spike
-            }
+    for i in range(len(candles_5m) - 4, len(candles_5m) - 2):
+        c = candles_5m[i]
+        broke_above    = c["high"]  > zone["high"]
+        strong_recover = c["close"] <= max_recovery
+        vol_spike      = check_volume_spike(candles_5m, i)
+
+        if not (broke_above and strong_recover):
+            continue
+
+        conf = candles_5m[i + 1]
+        if conf["close"] >= conf["open"]:  # konfirmasi harus bearish
+            continue
+
+        return {
+            "confirmed":      True,
+            "candle_index":   i,
+            "entry_price":    candles_5m[i + 2]["open"],
+            "rejection_high": c["high"],
+            "volume_spike":   vol_spike
+        }
     return None
 
 def calculate_trade(direction: str, entry: float, zone: dict,

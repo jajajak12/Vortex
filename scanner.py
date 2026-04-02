@@ -11,7 +11,9 @@ from strategy1_liquidity import (
     check_rejection_short,
     calculate_trade,
 )
+from strategy2_wick import scan_wick_setups
 from telegram_bot import alert_touch, alert_entry, alert_result, alert_stats, alert_info
+from wick_alerts import alert_wick_detected, alert_wick_entry
 from trade_tracker import log_signal, update_trades_for_pair, get_stats
 
 # ── State tracker ────────────────────────────────────────────
@@ -27,14 +29,56 @@ def is_on_cooldown(store: dict, key: str) -> bool:
     if key not in store:
         return False
     elapsed = time.time() - store[key]
-    return elapsed < ALERT_COOLDOWN
+    if elapsed >= ALERT_COOLDOWN:
+        del store[key]
+        return False
+    return True
+
+alerted_wick_detected = {}  # key: f"{pair}_{tf}_{wick_low}" → timestamp
+alerted_wick_entry    = {}
+
+def wick_key(pair: str, tf: str, wick_low: float) -> str:
+    return f"{pair}_{tf}_{wick_low:.4f}"
+
+def scan_pair_wick(pair: str):
+    """Scan Strategy 2: Wick Fill setups."""
+    try:
+        setups = scan_wick_setups(pair)
+
+        for setup in setups:
+            wk = wick_key(pair, setup["tf"], setup["wick"]["wick_low"])
+
+            # Alert 1: Wick terdeteksi (kirim sekali per wick)
+            if not is_on_cooldown(alerted_wick_detected, wk):
+                print(f"[{datetime.now().strftime('%H:%M:%S')}] 🕯️  WICK: {pair} {setup['tf_label']} | Low={setup['wick']['wick_low']} | {setup['confluence_label']}")
+                alert_wick_detected(setup)
+                alerted_wick_detected[wk] = time.time()
+
+            # Alert 2: Harga masuk entry zone + konfirmasi rejection 5m
+            if setup["in_entry_zone"] and not is_on_cooldown(alerted_wick_entry, wk):
+                candles_5m = get_candles(pair, "5m", limit=50)
+                wick_zone  = {
+                    "low":   setup["wick"]["wick_low"],
+                    "high":  setup["wick"]["wick_50pct"],
+                    "pivot": setup["wick"]["wick_low"],
+                }
+                rejection = check_rejection_long(candles_5m, wick_zone)
+                if rejection and rejection["confirmed"]:
+                    print(f"[{datetime.now().strftime('%H:%M:%S')}] ✅ WICK ENTRY: {pair} {setup['tf_label']} @ {setup['current_price']}")
+                    alert_wick_entry(setup)
+                    alerted_wick_entry[wk] = time.time()
+
+    except Exception as e:
+        print(f"[WICK SCAN ERROR] {pair}: {e}")
+        traceback.print_exc()
 
 def scan_pair(pair: str):
     """Scan satu pair untuk setup Strategy 1."""
     try:
-        # 1. Ambil zona liquidity fresh dari 4H
-        zones = get_fresh_liquidity_zones(pair)
-        all_zones = zones["LONG"] + zones["SHORT"]
+        # 1. Ambil zona liquidity fresh dari 4H + HTF bias
+        zones     = get_fresh_liquidity_zones(pair)
+        htf_bias  = zones["htf_bias"]
+        all_zones = [z for z in zones["LONG"] + zones["SHORT"] if z["type"] == htf_bias]
 
         if not all_zones:
             return
@@ -130,7 +174,8 @@ def run_scanner():
 
     alert_info(
         f"🤖 Trading Agent aktif!\n"
-        f"Strategy: Liquidity Grab + Rejection\n"
+        f"Strategy 1: Liquidity Grab + Rejection\n"
+        f"Strategy 2: Wick Fill (1W/1D/4H)\n"
         f"Pairs: {len(CRYPTO_PAIRS)} crypto pairs\n"
         f"Interval: {SCAN_INTERVAL_SECONDS}s"
     )
@@ -143,7 +188,8 @@ def run_scanner():
         print(f"\n[{datetime.now().strftime('%H:%M:%S')}] Scanning {len(CRYPTO_PAIRS)} pairs...")
 
         for pair in CRYPTO_PAIRS:
-            scan_pair(pair)
+            scan_pair(pair)       # Strategy 1: Liquidity Grab
+            scan_pair_wick(pair)  # Strategy 2: Wick Fill
             time.sleep(0.3)  # Rate limit Binance API
 
         scan_count += 1
