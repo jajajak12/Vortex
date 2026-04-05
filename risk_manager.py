@@ -27,14 +27,16 @@ from config import (
 
 @dataclass
 class TradeSetup:
-    pair:      str
-    direction: str     # "LONG" | "SHORT"
-    entry:     float
-    sl:        float
-    tp:        float   # TP utama untuk RR check (pakai TP2 jika ada)
-    strategy:  str     # "S1" | "S2" | "S3"
-    atr:       float = 0.0
-    risk_pct:  float = RISK_PCT_DEFAULT
+    pair:         str
+    direction:    str     # "LONG" | "SHORT"
+    entry:        float
+    sl:           float
+    tp:           float   # TP utama untuk RR check (pakai TP2 jika ada)
+    strategy:     str     # "S1" | "S2" | "S3"
+    atr:          float = 0.0
+    risk_pct:     float = RISK_PCT_DEFAULT
+    min_rr:       float = MIN_RR_RATIO      # override per pair
+    atr_sl_mult:  float = ATR_SL_MIN_MULT   # override per pair
 
 
 @dataclass
@@ -104,20 +106,20 @@ class RiskManager:
         sl_pct  = sl_dist / setup.entry
         rr      = round(tp_dist / sl_dist, 2)
 
-        # ── Gate 1: Minimum RR ────────────────────────────────
-        if rr < MIN_RR_RATIO:
+        # ── Gate 1: Minimum RR (pair-specific) ───────────────────
+        if rr < setup.min_rr:
             return RiskCheck(
                 approved=False,
-                reason=f"RR {rr:.2f} < minimum {MIN_RR_RATIO}",
+                reason=f"RR {rr:.2f} < minimum {setup.min_rr} ({setup.pair})",
                 rr_ratio=rr,
             )
 
-        # ── Gate 2: ATR SL validation ─────────────────────────
-        if setup.atr > 0 and sl_dist < setup.atr * ATR_SL_MIN_MULT:
+        # ── Gate 2: ATR SL validation (pair-specific) ────────────
+        if setup.atr > 0 and sl_dist < setup.atr * setup.atr_sl_mult:
             return RiskCheck(
                 approved=False,
                 reason=(f"SL terlalu sempit: {sl_dist:.4f} < "
-                        f"{ATR_SL_MIN_MULT}x ATR ({setup.atr:.4f})"),
+                        f"{setup.atr_sl_mult}x ATR ({setup.atr:.4f})"),
                 rr_ratio=rr,
             )
 

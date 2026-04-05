@@ -168,7 +168,8 @@ def check_volume_spike(candles: list[dict], index: int, window: int = 20) -> boo
     avg_vol = np.mean([c["volume"] for c in candles[index - window:index]])
     return candles[index]["volume"] >= avg_vol * VOLUME_SPIKE_MULTIPLIER
 
-def check_rejection_long(candles_5m: list[dict], zone: dict) -> dict | None:
+def check_rejection_long(candles_5m: list[dict], zone: dict,
+                         vol_spike_required: bool | None = None) -> dict | None:
     """
     Cek rejection LONG di TF 5m dengan 2-candle confirmation:
     1. Rejection: spike bawah zona + close kembali masuk dengan strength ≥30% zona
@@ -190,7 +191,8 @@ def check_rejection_long(candles_5m: list[dict], zone: dict) -> dict | None:
         if not (broke_below and strong_recover):
             continue
 
-        if REQUIRE_VOLUME_SPIKE and not vol_spike:
+        req_vol = REQUIRE_VOLUME_SPIKE if vol_spike_required is None else vol_spike_required
+        if req_vol and not vol_spike:
             continue
 
         conf = candles_5m[i + 1]
@@ -206,7 +208,8 @@ def check_rejection_long(candles_5m: list[dict], zone: dict) -> dict | None:
         }
     return None
 
-def check_rejection_short(candles_5m: list[dict], zone: dict) -> dict | None:
+def check_rejection_short(candles_5m: list[dict], zone: dict,
+                          vol_spike_required: bool | None = None) -> dict | None:
     """
     Cek rejection SHORT di TF 5m dengan 2-candle confirmation:
     1. Rejection: spike atas zona + close kembali masuk dengan strength ≥30% zona
@@ -228,7 +231,8 @@ def check_rejection_short(candles_5m: list[dict], zone: dict) -> dict | None:
         if not (broke_above and strong_recover):
             continue
 
-        if REQUIRE_VOLUME_SPIKE and not vol_spike:
+        req_vol = REQUIRE_VOLUME_SPIKE if vol_spike_required is None else vol_spike_required
+        if req_vol and not vol_spike:
             continue
 
         conf = candles_5m[i + 1]

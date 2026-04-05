@@ -7,6 +7,7 @@ from typing import Optional
 from config import (
     CRYPTO_PAIRS, SCAN_INTERVAL_SECONDS,
     ENABLE_MACRO_FILTER, SIGNAL_RATE_MIN, STRAT3_MIN_SCORE,
+    get_pair_params,
 )
 from strategy1_liquidity import (
     get_fresh_liquidity_zones, get_candles, get_btc_macro_regime,
@@ -30,6 +31,7 @@ class PairContext:
     pair:        str
     btc_macro:   str
     wick_setups: list = field(default_factory=list)
+    params:      dict = field(default_factory=dict)  # pair-specific overrides
 
 
 # ── Alert cooldown store ──────────────────────────────────────
@@ -100,7 +102,12 @@ class VortexScanner:
         except Exception as e:
             print(f"[WICK INIT ERROR] {pair}: {e}")
             wick_setups = []
-        return PairContext(pair=pair, btc_macro=btc_macro, wick_setups=wick_setups)
+        return PairContext(
+            pair=pair,
+            btc_macro=btc_macro,
+            wick_setups=wick_setups,
+            params=get_pair_params(pair),
+        )
 
     # ── Strategy 1: Fresh Liquidity Grab ─────────────────────
 
@@ -145,9 +152,12 @@ class VortexScanner:
                     continue
 
                 candles_5m = get_candles(ctx.pair, "5m", limit=50)
-                rejection  = (check_rejection_long(candles_5m, zone)
+                req_vol    = ctx.params["REQUIRE_VOLUME_SPIKE"]
+                rejection  = (check_rejection_long(candles_5m, zone,
+                                                   vol_spike_required=req_vol)
                               if valid_dir == "LONG"
-                              else check_rejection_short(candles_5m, zone))
+                              else check_rejection_short(candles_5m, zone,
+                                                         vol_spike_required=req_vol))
 
                 if not (rejection and rejection["confirmed"]):
                     continue
@@ -161,6 +171,9 @@ class VortexScanner:
                     pair=ctx.pair, direction=valid_dir,
                     entry=trade["entry"], sl=trade["sl"], tp=trade["tp"],
                     strategy="S1",
+                    risk_pct=ctx.params["RISK_PCT"],
+                    min_rr=ctx.params["MIN_RR_RATIO"],
+                    atr_sl_mult=ctx.params["ATR_SL_MIN_MULT"],
                 ))
                 if not risk.approved:
                     print(f"[{_ts()}] ⛔ [S1] RISK REJECTED: {ctx.pair} — {risk.reason}")
@@ -212,7 +225,10 @@ class VortexScanner:
                     "high":  setup["wick"]["wick_50pct"],
                     "pivot": setup["wick"]["wick_low"],
                 }
-                rejection = check_rejection_long(candles_5m, wick_zone)
+                rejection = check_rejection_long(
+                    candles_5m, wick_zone,
+                    vol_spike_required=ctx.params["REQUIRE_VOLUME_SPIKE"]
+                )
 
                 if rejection and rejection["confirmed"]:
                     t = setup["trade"]
@@ -220,6 +236,9 @@ class VortexScanner:
                         pair=ctx.pair, direction="LONG",
                         entry=t["entry"], sl=t["sl"], tp=t["tp2"],
                         strategy="S2",
+                        risk_pct=ctx.params["RISK_PCT"],
+                        min_rr=ctx.params["MIN_RR_RATIO"],
+                        atr_sl_mult=ctx.params["ATR_SL_MIN_MULT"],
                     ))
                     if not risk.approved:
                         print(f"[{_ts()}] ⛔ [S2] RISK REJECTED: {ctx.pair} — {risk.reason}")
@@ -276,9 +295,12 @@ class VortexScanner:
                     "pivot": setup["fvg"]["fvg_mid"],
                 }
                 candles_5m = get_candles(ctx.pair, "5m", limit=50)
-                rejection  = (check_rejection_long(candles_5m, fvg_zone)
+                req_vol    = ctx.params["REQUIRE_VOLUME_SPIKE"]
+                rejection  = (check_rejection_long(candles_5m, fvg_zone,
+                                                   vol_spike_required=req_vol)
                               if direction == "LONG"
-                              else check_rejection_short(candles_5m, fvg_zone))
+                              else check_rejection_short(candles_5m, fvg_zone,
+                                                         vol_spike_required=req_vol))
 
                 if not (rejection and rejection["confirmed"]):
                     continue
@@ -288,6 +310,9 @@ class VortexScanner:
                     pair=ctx.pair, direction=direction,
                     entry=t["entry"], sl=t["sl"], tp=t["tp2"],
                     strategy="S3", atr=setup.get("atr", 0.0),
+                    risk_pct=ctx.params["RISK_PCT"],
+                    min_rr=ctx.params["MIN_RR_RATIO"],
+                    atr_sl_mult=ctx.params["ATR_SL_MIN_MULT"],
                 ))
                 if not risk.approved:
                     print(f"[{_ts()}] ⛔ [S3] RISK REJECTED: {ctx.pair} — {risk.reason}")
