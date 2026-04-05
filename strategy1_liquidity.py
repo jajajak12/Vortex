@@ -4,6 +4,8 @@ from config import (
     BINANCE_API_KEY, BINANCE_API_SECRET,
     LIQUIDITY_CANDLES_MIN, SWING_LOOKBACK,
     TOUCH_THRESHOLD_PCT, VOLUME_SPIKE_MULTIPLIER,
+    REQUIRE_VOLUME_SPIKE, TRADE_RR,
+    BTC_PAIR, MACRO_EMA_PERIOD, ATR_PERIOD,
     TF_ZONE, TF_MONITOR, TF_ENTRY
 )
 
@@ -33,6 +35,17 @@ def get_candles(pair: str, tf: str, limit: int = 100) -> list[dict]:
             "volume": float(c[5]),
         })
     return candles
+
+def calculate_atr(candles: list[dict], period: int = ATR_PERIOD) -> float:
+    """Average True Range — dipakai Strat 1 zone filter & Strat 3."""
+    if len(candles) < period + 1:
+        return 0.0
+    trs = []
+    for i in range(1, len(candles)):
+        prev = candles[i - 1]["close"]
+        h, l = candles[i]["high"], candles[i]["low"]
+        trs.append(max(h - l, abs(h - prev), abs(l - prev)))
+    return float(np.mean(trs[-period:]))
 
 def find_swing_lows(candles: list[dict], lookback: int = 5) -> list[dict]:
     """
@@ -99,6 +112,22 @@ def _compute_htf_bias(candles: list[dict]) -> str:
         ema = price * k + ema * (1 - k)
     return "LONG" if candles[-1]["close"] > ema else "SHORT"
 
+def get_btc_macro_regime() -> str:
+    """
+    Deteksi macro regime dari BTC EMA200 1W.
+    Return 'BULL' jika BTC close > EMA200, 'BEAR' jika sebaliknya.
+    Default ke 'BULL' jika data tidak cukup.
+    """
+    candles = get_candles(BTC_PAIR, "1w", limit=MACRO_EMA_PERIOD + 20)
+    if len(candles) < MACRO_EMA_PERIOD:
+        return "BULL"
+    closes = [c["close"] for c in candles]
+    k   = 2 / (MACRO_EMA_PERIOD + 1)
+    ema = sum(closes[:MACRO_EMA_PERIOD]) / MACRO_EMA_PERIOD
+    for price in closes[MACRO_EMA_PERIOD:]:
+        ema = price * k + ema * (1 - k)
+    return "BULL" if candles[-1]["close"] > ema else "BEAR"
+
 def get_fresh_liquidity_zones(pair: str) -> dict:
     """
     Ambil zona liquidity fresh dari TF 4H.
@@ -161,6 +190,9 @@ def check_rejection_long(candles_5m: list[dict], zone: dict) -> dict | None:
         if not (broke_below and strong_recover):
             continue
 
+        if REQUIRE_VOLUME_SPIKE and not vol_spike:
+            continue
+
         conf = candles_5m[i + 1]
         if conf["close"] <= conf["open"]:  # konfirmasi harus bullish
             continue
@@ -196,6 +228,9 @@ def check_rejection_short(candles_5m: list[dict], zone: dict) -> dict | None:
         if not (broke_above and strong_recover):
             continue
 
+        if REQUIRE_VOLUME_SPIKE and not vol_spike:
+            continue
+
         conf = candles_5m[i + 1]
         if conf["close"] >= conf["open"]:  # konfirmasi harus bearish
             continue
@@ -219,13 +254,13 @@ def calculate_trade(direction: str, entry: float, zone: dict,
     if direction == "LONG":
         sl      = zone["low"] * 0.998   # sedikit di bawah low zona
         sl_dist = entry - sl
-        tp      = entry + sl_dist
+        tp      = entry + sl_dist * TRADE_RR
     else:  # SHORT
         sl      = zone["high"] * 1.002  # sedikit di atas high zona
         sl_dist = sl - entry
-        tp      = entry - sl_dist
+        tp      = entry - sl_dist * TRADE_RR
 
-    rr_ratio = round(abs(tp - entry) / abs(entry - sl), 2) if abs(entry - sl) > 0 else 1.0
+    rr_ratio = round(abs(tp - entry) / abs(entry - sl), 2) if abs(entry - sl) > 0 else TRADE_RR
 
     return {
         "entry": round(entry, 4),

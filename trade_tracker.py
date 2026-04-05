@@ -18,21 +18,28 @@ def _save(trades):
         json.dump(trades, f, indent=2)
 
 
-def log_signal(pair: str, direction: str, entry: float, sl: float, tp: float) -> dict:
+def log_signal(pair: str, direction: str, entry: float, sl: float, tp: float,
+               confluence_score: int = 0, regime_state: str = "UNKNOWN",
+               strategy: str = "S1") -> dict:
     """Catat signal entry baru dengan status OPEN."""
     trades = _load()
     trade = {
-        "id":          int(time.time() * 1000),
-        "time":        datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-        "pair":        pair,
-        "direction":   direction,
-        "entry":       entry,
-        "sl":          sl,
-        "tp":          tp,
-        "status":      "OPEN",
-        "result":      None,
-        "close_price": None,
-        "close_time":  None,
+        "id":               int(time.time() * 1000),
+        "time":             datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
+        "pair":             pair,
+        "direction":        direction,
+        "entry":            entry,
+        "sl":               sl,
+        "tp":               tp,
+        "status":           "OPEN",
+        "result":           None,
+        "close_price":      None,
+        "close_time":       None,
+        # Metadata untuk postmortem
+        "strategy":         strategy,
+        "confluence_score": confluence_score,
+        "regime_state":     regime_state,
+        "candles_to_resolve": None,  # diisi saat close
     }
     trades.append(trade)
     _save(trades)
@@ -65,10 +72,15 @@ def update_trades_for_pair(pair: str, current_price: float) -> list:
                 result = "LOSS"
 
         if result:
-            t["status"]      = "CLOSED"
-            t["result"]      = result
-            t["close_price"] = current_price
-            t["close_time"]  = datetime.now().strftime("%Y-%m-%d %H:%M:%S")
+            open_time  = datetime.strptime(t["time"], "%Y-%m-%d %H:%M:%S")
+            close_time = datetime.now()
+            minutes_open = int((close_time - open_time).total_seconds() / 60)
+
+            t["status"]           = "CLOSED"
+            t["result"]           = result
+            t["close_price"]      = current_price
+            t["close_time"]       = close_time.strftime("%Y-%m-%d %H:%M:%S")
+            t["candles_to_resolve"] = minutes_open // 5  # dalam 5m candles
             closed.append(t)
 
     if closed:

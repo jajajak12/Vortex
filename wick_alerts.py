@@ -31,7 +31,7 @@ def alert_wick_entry(setup: dict):
     notes = "\n".join(setup["confluence_notes"])
 
     msg = (
-        f"✅ <b>WICK FILL ENTRY — {setup['tf_label']}</b> 🟢\n"
+        f"✅ <b>[STRAT2] WICK FILL ENTRY — {setup['tf_label']}</b> 🟢\n"
         f"━━━━━━━━━━━━━━━\n"
         f"Pair      : <b>{setup['pair']}</b>\n"
         f"Priority  : {setup['priority']}\n"

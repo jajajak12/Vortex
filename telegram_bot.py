@@ -36,7 +36,7 @@ def alert_entry(pair: str, direction: str, entry: float, sl: float, tp: float, r
     sl_pct  = abs(entry - sl) / entry * 100
     tp_pct  = abs(tp - entry) / entry * 100
     msg = (
-        f"✅ <b>ENTRY SIGNAL — {emoji}</b>\n"
+        f"✅ <b>[STRAT1] ENTRY SIGNAL — {emoji}</b>\n"
         f"━━━━━━━━━━━━━━━\n"
         f"Pair    : <b>{pair}</b>\n"
         f"Entry   : <b>${entry:,.4f}</b>\n"
