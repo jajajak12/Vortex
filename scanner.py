@@ -162,10 +162,11 @@ class VortexScanner:
                 if not (rejection and rejection["confirmed"]):
                     continue
 
-                other_zones = zones["LONG"] if valid_dir == "LONG" else zones["SHORT"]
-                prev_l      = _find_prev_liquidity(zone, other_zones, valid_dir)
-                trade       = calculate_trade(valid_dir, rejection["entry_price"],
-                                              zone, prev_l)
+                # TP = next liquidity di sisi berlawanan (swing high untuk LONG, low untuk SHORT)
+                tp_zones = zones["SHORT"] if valid_dir == "LONG" else zones["LONG"]
+                tp_target = _find_tp_target(rejection["entry_price"], tp_zones, valid_dir)
+                trade     = calculate_trade(valid_dir, rejection["entry_price"],
+                                            zone, tp_target)
 
                 risk = self.risk_mgr.evaluate(TradeSetup(
                     pair=ctx.pair, direction=valid_dir,
@@ -402,14 +403,21 @@ class VortexScanner:
 def _ts() -> str:
     return datetime.now().strftime("%H:%M:%S")
 
-def _find_prev_liquidity(zone: dict, all_zones: list, direction: str) -> float:
-    pivot = zone["pivot"]
+def _find_tp_target(entry: float, opposite_zones: list, direction: str) -> float | None:
+    """
+    Cari TP target di next liquidity berdasarkan struktur pasar.
+
+    LONG  → nearest swing HIGH di atas entry (dari zones["SHORT"])
+    SHORT → nearest swing LOW  di bawah entry (dari zones["LONG"])
+
+    Return None jika tidak ada kandidat — calculate_trade() akan fallback ke TRADE_RR.
+    """
     if direction == "LONG":
-        c = [z["pivot"] for z in all_zones if z["pivot"] < pivot]
-        return min(c) if c else pivot * 0.97
+        candidates = [z["pivot"] for z in opposite_zones if z["pivot"] > entry]
+        return min(candidates) if candidates else None   # nearest resistance
     else:
-        c = [z["pivot"] for z in all_zones if z["pivot"] > pivot]
-        return max(c) if c else pivot * 1.03
+        candidates = [z["pivot"] for z in opposite_zones if z["pivot"] < entry]
+        return max(candidates) if candidates else None   # nearest support
 
 
 if __name__ == "__main__":

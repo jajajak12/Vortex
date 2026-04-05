@@ -249,20 +249,27 @@ def check_rejection_short(candles_5m: list[dict], zone: dict,
     return None
 
 def calculate_trade(direction: str, entry: float, zone: dict,
-                    prev_liquidity_price: float) -> dict:
+                    tp_target: float | None = None) -> dict:
     """
     Hitung SL dan TP:
-    - SL: tepat di luar batas zona rejection (bukan zona lain yang jauh)
-    - TP: 1:1 RR dari SL distance
+    - SL: tepat di luar batas zona rejection
+    - TP: next liquidity level (tp_target). Fallback ke TRADE_RR jika tidak ada.
+
+    tp_target untuk LONG = nearest swing HIGH di atas entry (resistance).
+    tp_target untuk SHORT = nearest swing LOW di bawah entry (support).
     """
     if direction == "LONG":
-        sl      = zone["low"] * 0.998   # sedikit di bawah low zona
+        sl      = zone["low"] * 0.998
         sl_dist = entry - sl
-        tp      = entry + sl_dist * TRADE_RR
-    else:  # SHORT
-        sl      = zone["high"] * 1.002  # sedikit di atas high zona
+        tp      = (tp_target
+                   if (tp_target and tp_target > entry)
+                   else entry + sl_dist * TRADE_RR)
+    else:
+        sl      = zone["high"] * 1.002
         sl_dist = sl - entry
-        tp      = entry - sl_dist * TRADE_RR
+        tp      = (tp_target
+                   if (tp_target and tp_target < entry)
+                   else entry - sl_dist * TRADE_RR)
 
     rr_ratio = round(abs(tp - entry) / abs(entry - sl), 2) if abs(entry - sl) > 0 else TRADE_RR
 
