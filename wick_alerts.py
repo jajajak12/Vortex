@@ -24,12 +24,13 @@ def alert_wick_detected(setup: dict):
     )
     send_telegram(msg)
 
-def alert_wick_entry(setup: dict):
+def alert_wick_entry(setup: dict, position_usdt: float = 0.0):
     """Alert: Harga masuk entry zone wick fill."""
     w = setup["wick"]
     t = setup["trade"]
     notes = "\n".join(setup["confluence_notes"])
 
+    pos_line = f"Size      : <b>${position_usdt:,.2f} USDT</b>\n" if position_usdt > 0 else ""
     msg = (
         f"✅ <b>[STRAT2] WICK FILL ENTRY — {setup['tf_label']}</b> 🟢\n"
         f"━━━━━━━━━━━━━━━\n"
@@ -40,6 +41,7 @@ def alert_wick_entry(setup: dict):
         f"SL        : ${t['sl']} ({t['sl_pct']}%)\n"
         f"TP1 (50%) : ${t['tp1']} (+{t['tp1_pct']}%) | RR {t['rr1']}\n"
         f"TP2 (100%): ${t['tp2']} (+{t['tp2_pct']}%) | RR {t['rr2']}\n"
+        f"{pos_line}"
         f"━━━━━━━━━━━━━━━\n"
         f"Confluence: {setup['confluence_label']}\n"
         f"{notes}\n"

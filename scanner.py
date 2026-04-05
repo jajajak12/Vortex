@@ -19,6 +19,7 @@ from telegram_bot import alert_touch, alert_entry, alert_result, alert_stats, al
 from wick_alerts import alert_wick_detected, alert_wick_entry
 from fvg_alerts import alert_fvg_detected, alert_fvg_entry
 from trade_tracker import log_signal, update_trades_for_pair, get_stats
+from risk_manager import RiskManager, TradeSetup
 
 
 # ── Per-pair scan context ─────────────────────────────────────
@@ -88,6 +89,7 @@ class VortexScanner:
         self.cd_fvg_e  = CooldownStore()
 
         self.rate_mon        = SignalRateMonitor()
+        self.risk_mgr        = RiskManager()
         self.last_stats_date: Optional[str] = None
 
     # ── Per-pair context ──────────────────────────────────────
@@ -124,6 +126,7 @@ class VortexScanner:
                 print(f"[{_ts()}] {res}: {ctx.pair} {ct['direction']} | "
                       f"Close={ct['close_price']}")
                 alert_result(ct)
+                self.risk_mgr.on_trade_closed()
 
             for zone in all_zones:
                 ckey = f"{ctx.pair}_{zone['type']}_{zone['pivot']:.4f}"
@@ -154,14 +157,27 @@ class VortexScanner:
                 trade       = calculate_trade(valid_dir, rejection["entry_price"],
                                               zone, prev_l)
 
+                risk = self.risk_mgr.evaluate(TradeSetup(
+                    pair=ctx.pair, direction=valid_dir,
+                    entry=trade["entry"], sl=trade["sl"], tp=trade["tp"],
+                    strategy="S1",
+                ))
+                if not risk.approved:
+                    print(f"[{_ts()}] ⛔ [S1] RISK REJECTED: {ctx.pair} — {risk.reason}")
+                    continue
+
                 vol = " 🔥 Volume spike!" if rejection.get("volume_spike") else ""
                 print(f"[{_ts()}] ✅ [S1] ENTRY: {ctx.pair} {valid_dir} | "
-                      f"E={trade['entry']} SL={trade['sl']} TP={trade['tp']}{vol}")
+                      f"E={trade['entry']} SL={trade['sl']} TP={trade['tp']} "
+                      f"RR={risk.rr_ratio} Size=${risk.position_usdt}{vol}")
                 alert_entry(ctx.pair, valid_dir,
-                            trade["entry"], trade["sl"], trade["tp"], trade["rr"])
+                            trade["entry"], trade["sl"], trade["tp"],
+                            trade["rr"], position_usdt=risk.position_usdt)
                 log_signal(ctx.pair, valid_dir, trade["entry"],
                            trade["sl"], trade["tp"],
-                           regime_state=ctx.btc_macro, strategy="S1")
+                           regime_state=ctx.btc_macro, strategy="S1",
+                           position_usdt=risk.position_usdt)
+                self.risk_mgr.on_trade_opened()
                 self.rate_mon.track(ctx.pair)
                 self.cd_entry.set(ckey)
 
@@ -199,9 +215,24 @@ class VortexScanner:
                 rejection = check_rejection_long(candles_5m, wick_zone)
 
                 if rejection and rejection["confirmed"]:
+                    t = setup["trade"]
+                    risk = self.risk_mgr.evaluate(TradeSetup(
+                        pair=ctx.pair, direction="LONG",
+                        entry=t["entry"], sl=t["sl"], tp=t["tp2"],
+                        strategy="S2",
+                    ))
+                    if not risk.approved:
+                        print(f"[{_ts()}] ⛔ [S2] RISK REJECTED: {ctx.pair} — {risk.reason}")
+                        continue
+
                     print(f"[{_ts()}] ✅ [S2] WICK ENTRY: {ctx.pair} {setup['tf_label']} "
-                          f"@ {setup['current_price']}")
-                    alert_wick_entry(setup)
+                          f"@ {setup['current_price']} Size=${risk.position_usdt}")
+                    alert_wick_entry(setup, position_usdt=risk.position_usdt)
+                    log_signal(ctx.pair, "LONG", t["entry"], t["sl"], t["tp2"],
+                               regime_state=ctx.btc_macro, strategy="S2",
+                               position_usdt=risk.position_usdt)
+                    self.risk_mgr.on_trade_opened()
+                    self.rate_mon.track(ctx.pair)
                     self.cd_wick_e.set(wk)
 
         except Exception as e:
@@ -252,13 +283,25 @@ class VortexScanner:
                 if not (rejection and rejection["confirmed"]):
                     continue
 
-                t = setup["trade"]
+                t    = setup["trade"]
+                risk = self.risk_mgr.evaluate(TradeSetup(
+                    pair=ctx.pair, direction=direction,
+                    entry=t["entry"], sl=t["sl"], tp=t["tp2"],
+                    strategy="S3", atr=setup.get("atr", 0.0),
+                ))
+                if not risk.approved:
+                    print(f"[{_ts()}] ⛔ [S3] RISK REJECTED: {ctx.pair} — {risk.reason}")
+                    continue
+
                 print(f"[{_ts()}] ✅ [S3] FVG ENTRY: {ctx.pair} {direction} "
-                      f"@ {t['entry']} | Score={setup['confluence_score']}")
-                alert_fvg_entry(setup)
+                      f"@ {t['entry']} | Score={setup['confluence_score']} "
+                      f"RR={risk.rr_ratio} Size=${risk.position_usdt}")
+                alert_fvg_entry(setup, position_usdt=risk.position_usdt)
                 log_signal(ctx.pair, direction, t["entry"], t["sl"], t["tp2"],
                            confluence_score=setup["confluence_score"],
-                           regime_state=ctx.btc_macro, strategy="S3")
+                           regime_state=ctx.btc_macro, strategy="S3",
+                           position_usdt=risk.position_usdt)
+                self.risk_mgr.on_trade_opened()
                 self.rate_mon.track(ctx.pair)
                 self.cd_fvg_e.set(fk)
 
@@ -269,6 +312,9 @@ class VortexScanner:
     # ── Scan cycle ────────────────────────────────────────────
 
     def scan_once(self, btc_macro: str):
+        # Sync open trade count dari trade_tracker sebelum scan
+        self.risk_mgr.sync_open_count(get_stats()["open"])
+
         for pair in CRYPTO_PAIRS:
             ctx = self._build_context(pair, btc_macro)
             self._scan_s1(ctx)
@@ -310,10 +356,12 @@ class VortexScanner:
             today = datetime.now().strftime("%Y-%m-%d")
             if today != self.last_stats_date:
                 self.last_stats_date = today
-                stats = get_stats()
+                stats    = get_stats()
+                risk_st  = self.risk_mgr.status()
                 print(f"[STATS] WR={stats['winrate']}% "
                       f"W={stats['wins']} L={stats['losses']} "
-                      f"Open={stats['open']}")
+                      f"Open={stats['open']} | "
+                      f"DailyRisk={risk_st['daily_risk_used']}%")
                 alert_stats(stats)
                 self.rate_mon.check(CRYPTO_PAIRS)
 

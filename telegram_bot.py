@@ -30,11 +30,14 @@ def alert_touch(pair: str, price: float, zone_low: float, zone_high: float, dire
     )
     send_telegram(msg)
 
-def alert_entry(pair: str, direction: str, entry: float, sl: float, tp: float, rr: str = "1:1"):
+def alert_entry(pair: str, direction: str, entry: float, sl: float, tp: float,
+                rr: str = "1:1", position_usdt: float = 0.0):
     """Alert 2: Rejection confirmed, entry signal."""
-    emoji = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
-    sl_pct  = abs(entry - sl) / entry * 100
-    tp_pct  = abs(tp - entry) / entry * 100
+    emoji  = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
+    sl_pct = abs(entry - sl) / entry * 100
+    tp_pct = abs(tp - entry) / entry * 100
+    pos_line = (f"Size    : <b>${position_usdt:,.2f} USDT</b>\n"
+                if position_usdt > 0 else "")
     msg = (
         f"✅ <b>[STRAT1] ENTRY SIGNAL — {emoji}</b>\n"
         f"━━━━━━━━━━━━━━━\n"
@@ -43,6 +46,7 @@ def alert_entry(pair: str, direction: str, entry: float, sl: float, tp: float, r
         f"SL      : ${sl:,.4f} ({sl_pct:.2f}%)\n"
         f"TP      : ${tp:,.4f} ({tp_pct:.2f}%)\n"
         f"RR      : {rr}\n"
+        f"{pos_line}"
         f"━━━━━━━━━━━━━━━\n"
         f"⚡ <i>Entry di open candle berikutnya</i>"
     )

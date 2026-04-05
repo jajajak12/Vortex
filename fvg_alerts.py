@@ -29,7 +29,7 @@ def alert_fvg_detected(setup: dict):
     send_telegram(msg)
 
 
-def alert_fvg_entry(setup: dict):
+def alert_fvg_entry(setup: dict, position_usdt: float = 0.0):
     """Alert: Harga masuk FVG zone, rejection 5m confirmed."""
     fvg   = setup["fvg"]
     t     = setup["trade"]
@@ -37,6 +37,7 @@ def alert_fvg_entry(setup: dict):
     emoji = "🟢 LONG" if dir == "LONG" else "🔴 SHORT"
     notes = "\n".join(setup["confluence_notes"])
 
+    pos_line = f"Size     : <b>${position_usdt:,.2f} USDT</b>\n" if position_usdt > 0 else ""
     msg = (
         f"✅ <b>[STRAT3] FVG ENTRY — {emoji}</b>\n"
         f"━━━━━━━━━━━━━━━\n"
@@ -48,6 +49,7 @@ def alert_fvg_entry(setup: dict):
         f"TP1 (FVG): ${t['tp1']:,.4f} (+{t['tp1_pct']}%) | RR {t['rr1']}\n"
         f"TP2 (1:2): ${t['tp2']:,.4f} (+{t['tp2_pct']}%) | RR {t['rr2']}\n"
         f"FVG Zone : ${fvg['fvg_low']:,.4f} – ${fvg['fvg_high']:,.4f}\n"
+        f"{pos_line}"
         f"━━━━━━━━━━━━━━━\n"
         f"{notes}\n"
         f"━━━━━━━━━━━━━━━\n"
