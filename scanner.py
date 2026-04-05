@@ -19,7 +19,7 @@ from strategy3_fvg import scan_fvg_setups
 from telegram_bot import alert_touch, alert_entry, alert_result, alert_stats, alert_info
 from wick_alerts import alert_wick_detected, alert_wick_entry
 from fvg_alerts import alert_fvg_detected, alert_fvg_entry
-from trade_tracker import log_signal, update_trades_for_pair, get_stats
+from trade_tracker import log_signal, update_trades_for_pair, get_stats, trim_old_trades
 from risk_manager import RiskManager, TradeSetup
 
 
@@ -93,6 +93,9 @@ class VortexScanner:
         self.rate_mon        = SignalRateMonitor()
         self.risk_mgr        = RiskManager()
         self.last_stats_date: Optional[str] = None
+        # Fix 5: BTC macro cache (EMA200 1W berubah sangat lambat)
+        self._macro_cache:     Optional[tuple[str, float]] = None  # (regime, timestamp)
+        self._macro_cache_ttl: int = 3600  # refresh tiap 1 jam
 
     # ── Per-pair context ──────────────────────────────────────
 
@@ -109,9 +112,21 @@ class VortexScanner:
             params=get_pair_params(pair),
         )
 
+    # ── Trade monitoring (dipanggil unconditional di scan_once) ──
+
+    def _monitor_trades(self, pair: str, current_price: float):
+        """Cek TP/SL hit untuk semua open trade pair ini (semua strategi)."""
+        for ct in update_trades_for_pair(pair, current_price):
+            res = "✅ WIN" if ct["result"] == "WIN" else "❌ LOSS"
+            strat = ct.get("strategy", "?")
+            print(f"[{_ts()}] {res} [{strat}]: {pair} {ct['direction']} | "
+                  f"Close={ct['close_price']}")
+            alert_result(ct)
+            self.risk_mgr.on_trade_closed()
+
     # ── Strategy 1: Fresh Liquidity Grab ─────────────────────
 
-    def _scan_s1(self, ctx: PairContext):
+    def _scan_s1(self, ctx: PairContext, current_price: float):
         try:
             zones    = get_fresh_liquidity_zones(ctx.pair)
             htf_bias = zones["htf_bias"]
@@ -124,16 +139,6 @@ class VortexScanner:
                          if z["type"] == valid_dir]
             if not all_zones:
                 return
-
-            candles_30m   = get_candles(ctx.pair, "30m", limit=5)
-            current_price = candles_30m[-1]["close"]
-
-            for ct in update_trades_for_pair(ctx.pair, current_price):
-                res = "✅ WIN" if ct["result"] == "WIN" else "❌ LOSS"
-                print(f"[{_ts()}] {res}: {ctx.pair} {ct['direction']} | "
-                      f"Close={ct['close_price']}")
-                alert_result(ct)
-                self.risk_mgr.on_trade_closed()
 
             for zone in all_zones:
                 ckey = f"{ctx.pair}_{zone['type']}_{zone['pivot']:.4f}"
@@ -342,8 +347,20 @@ class VortexScanner:
         self.risk_mgr.sync_open_count(get_stats()["open"])
 
         for pair in CRYPTO_PAIRS:
+            try:
+                # Ambil harga saat ini sekali — dipakai monitor + S1
+                candles_30m   = get_candles(pair, "30m", limit=5)
+                current_price = candles_30m[-1]["close"]
+            except Exception as e:
+                print(f"[PRICE ERROR] {pair}: {e}")
+                time.sleep(0.3)
+                continue
+
+            # Monitor TP/SL hits unconditional — tidak bergantung macro/strategy
+            self._monitor_trades(pair, current_price)
+
             ctx = self._build_context(pair, btc_macro)
-            self._scan_s1(ctx)
+            self._scan_s1(ctx, current_price)
             self._scan_s2(ctx)
             self._scan_s3(ctx)
             time.sleep(0.3)
@@ -368,17 +385,26 @@ class VortexScanner:
             scan_start = time.time()
             print(f"\n[{_ts()}] Scanning {len(CRYPTO_PAIRS)} pairs...")
 
+            # Fix 5: cache macro — EMA200 1W berubah sangat lambat
             try:
-                btc_macro = get_btc_macro_regime() if ENABLE_MACRO_FILTER else "BULL"
-                print(f"[{_ts()}] 🌍 Macro: "
-                      f"{'🟢 BULL' if btc_macro == 'BULL' else '🔴 BEAR'}")
+                now = time.time()
+                if (not ENABLE_MACRO_FILTER):
+                    btc_macro = "BULL"
+                elif (self._macro_cache is None or
+                      now - self._macro_cache[1] >= self._macro_cache_ttl):
+                    btc_macro = get_btc_macro_regime()
+                    self._macro_cache = (btc_macro, now)
+                    print(f"[{_ts()}] 🌍 Macro (refreshed): "
+                          f"{'🟢 BULL' if btc_macro == 'BULL' else '🔴 BEAR'}")
+                else:
+                    btc_macro = self._macro_cache[0]
             except Exception as e:
                 print(f"[MACRO ERROR] {e} — defaulting to BULL")
                 btc_macro = "BULL"
 
             self.scan_once(btc_macro)
 
-            # Daily winrate report (sekali per hari, saat hari berganti)
+            # Daily: winrate report + cleanup (sekali per hari, saat hari berganti)
             today = datetime.now().strftime("%Y-%m-%d")
             if today != self.last_stats_date:
                 self.last_stats_date = today
@@ -388,8 +414,11 @@ class VortexScanner:
                       f"W={stats['wins']} L={stats['losses']} "
                       f"Open={stats['open']} | "
                       f"DailyRisk={risk_st['daily_risk_used']}%")
+                for s, d in stats.get("by_strategy", {}).items():
+                    print(f"  [{s}] {d['wins']}W {d['losses']}L WR={d['winrate']}%")
                 alert_stats(stats)
                 self.rate_mon.check(CRYPTO_PAIRS)
+                trim_old_trades(keep_closed=500)  # Fix 6
 
             elapsed    = time.time() - scan_start
             sleep_time = max(0, SCAN_INTERVAL_SECONDS - elapsed)

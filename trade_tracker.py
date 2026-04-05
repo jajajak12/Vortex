@@ -96,14 +96,50 @@ def get_stats() -> dict:
     open_  = [t for t in trades if t["status"] == "OPEN"]
 
     if not closed:
-        return {"total": 0, "wins": 0, "losses": 0, "winrate": 0.0, "open": len(open_)}
+        return {
+            "total": 0, "wins": 0, "losses": 0, "winrate": 0.0,
+            "open": len(open_), "by_strategy": {},
+        }
 
     wins   = sum(1 for t in closed if t["result"] == "WIN")
     losses = sum(1 for t in closed if t["result"] == "LOSS")
+
+    # Breakdown per strategi
+    by_strategy: dict[str, dict] = {}
+    for t in closed:
+        s = t.get("strategy", "?")
+        if s not in by_strategy:
+            by_strategy[s] = {"wins": 0, "losses": 0, "total": 0, "winrate": 0.0}
+        by_strategy[s]["total"] += 1
+        if t["result"] == "WIN":
+            by_strategy[s]["wins"] += 1
+        else:
+            by_strategy[s]["losses"] += 1
+    for s, d in by_strategy.items():
+        d["winrate"] = round(d["wins"] / d["total"] * 100, 1) if d["total"] > 0 else 0.0
+
     return {
-        "total":   len(closed),
-        "wins":    wins,
-        "losses":  losses,
-        "winrate": round(wins / len(closed) * 100, 1),
-        "open":    len(open_),
+        "total":       len(closed),
+        "wins":        wins,
+        "losses":      losses,
+        "winrate":     round(wins / len(closed) * 100, 1),
+        "open":        len(open_),
+        "by_strategy": by_strategy,
     }
+
+
+def trim_old_trades(keep_closed: int = 500):
+    """
+    Fix 6: Bersihkan trades.json agar tidak tumbuh tak terbatas.
+    Simpan semua OPEN + max keep_closed trades CLOSED terbaru.
+    """
+    trades = _load()
+    open_  = [t for t in trades if t["status"] == "OPEN"]
+    closed = [t for t in trades if t["status"] == "CLOSED"]
+
+    if len(closed) <= keep_closed:
+        return  # belum perlu trim
+
+    closed_trimmed = closed[-keep_closed:]
+    _save(open_ + closed_trimmed)
+    print(f"[TRIM] trades.json: {len(closed)} → {len(closed_trimmed)} closed trades")

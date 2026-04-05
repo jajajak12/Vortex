@@ -317,7 +317,13 @@ def scan_fvg_setups(pair: str, wick_setups: list[dict] | None = None) -> list[di
         else:
             notes.append("⬜ 4H HTF tidak bearish")
 
-        if fvg["fvg_size"] > atr:
+        if _wick_overlaps_fvg(wick_setups, fvg):
+            score += 2
+            notes.append("✅ Overlap Strat 2 wick zone")
+        else:
+            notes.append("⬜ Tidak ada wick confluence")
+
+        if atr > 0 and fvg["fvg_size"] > atr:
             score += 1
             notes.append(f"✅ FVG besar: {fvg['fvg_size']:.4f} > ATR {atr:.4f}")
         else:

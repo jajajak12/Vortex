@@ -54,11 +54,12 @@ def alert_entry(pair: str, direction: str, entry: float, sl: float, tp: float,
 
 def alert_result(trade: dict):
     """Alert hasil trade: WIN atau LOSS."""
-    emoji  = "✅ WIN" if trade["result"] == "WIN" else "❌ LOSS"
-    dir_em = "🟢 LONG" if trade["direction"] == "LONG" else "🔴 SHORT"
+    emoji   = "✅ WIN" if trade["result"] == "WIN" else "❌ LOSS"
+    dir_em  = "🟢 LONG" if trade["direction"] == "LONG" else "🔴 SHORT"
+    strat   = trade.get("strategy", "?")
     pnl_pct = abs(trade["close_price"] - trade["entry"]) / trade["entry"] * 100
     msg = (
-        f"{emoji} — <b>{trade['pair']}</b> {dir_em}\n"
+        f"{emoji} <b>[{strat}]</b> — <b>{trade['pair']}</b> {dir_em}\n"
         f"━━━━━━━━━━━━━━━\n"
         f"Entry      : ${trade['entry']:,.4f}\n"
         f"Close      : ${trade['close_price']:,.4f} ({pnl_pct:.2f}%)\n"
@@ -70,12 +71,20 @@ def alert_result(trade: dict):
 
 
 def alert_stats(stats: dict):
-    """Kirim ringkasan winrate."""
+    """Kirim ringkasan winrate dengan breakdown per strategi."""
     if stats["total"] == 0:
         send_telegram("📊 <b>Winrate Tracker</b>\nBelum ada trade selesai.")
         return
     bar_filled = int(stats["winrate"] / 10)
     bar = "█" * bar_filled + "░" * (10 - bar_filled)
+
+    # Breakdown per strategi
+    strat_lines = ""
+    for s, d in sorted(stats.get("by_strategy", {}).items()):
+        if d["total"] > 0:
+            strat_lines += (f"  [{s}] {d['wins']}W {d['losses']}L "
+                            f"— WR {d['winrate']}%\n")
+
     msg = (
         f"📊 <b>WINRATE TRACKER</b>\n"
         f"━━━━━━━━━━━━━━━\n"
@@ -85,6 +94,8 @@ def alert_stats(stats: dict):
         f"Winrate      : <b>{stats['winrate']}%</b>\n"
         f"[{bar}]\n"
         f"Open trades  : {stats['open']}\n"
+        f"━━━━━━━━━━━━━━━\n"
+        f"Per Strategi:\n{strat_lines}"
         f"━━━━━━━━━━━━━━━"
     )
     send_telegram(msg)
