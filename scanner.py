@@ -1,9 +1,9 @@
 import time
-import traceback
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional
 
+from vortex_logger import get_logger
 from config import (
     CRYPTO_PAIRS, SCAN_INTERVAL_SECONDS,
     ENABLE_MACRO_FILTER, SIGNAL_RATE_MIN, STRAT3_MIN_SCORE,
@@ -22,6 +22,8 @@ from wick_alerts import alert_wick_detected, alert_wick_entry
 from fvg_alerts import alert_fvg_detected, alert_fvg_entry
 from trade_tracker import log_signal, update_trades_for_pair, get_stats, trim_old_trades
 from risk_manager import RiskManager, TradeSetup
+
+log = get_logger(__name__)
 
 
 # ── Per-pair scan context ─────────────────────────────────────
@@ -75,7 +77,7 @@ class SignalRateMonitor:
         counts = self._counts.get(today, {})
         low    = [p for p in pairs if counts.get(p, 0) < self.min_per_day]
         if low:
-            print(f"[⚠️  SIGNAL RATE] <{self.min_per_day} signal hari ini: {low}")
+            log.warning(f"[SIGNAL RATE] <{self.min_per_day} signal hari ini: {low}")
 
 
 # ── Main scanner ──────────────────────────────────────────────
@@ -113,7 +115,7 @@ class VortexScanner:
         Hanya cooldown 'detected' yang di-suppress — 'entry' tetap fresh.
         """
         from strategy3_fvg import scan_fvg_setups
-        print("[WARMUP] Pre-scanning existing setups (suppressing launch alerts)...")
+        log.info("[WARMUP] Pre-scanning existing setups (suppressing launch alerts)...")
         for pair in CRYPTO_PAIRS:
             try:
                 # Wick — masukkan ke permanent seen set
@@ -129,8 +131,8 @@ class VortexScanner:
                     fk = f"{pair}_{direction}_{setup['fvg']['fvg_low']:.4f}"
                     self._seen_fvg.add(fk)
             except Exception as e:
-                print(f"[WARMUP] {pair}: {e}")
-        print(f"[WARMUP] Done — {len(CRYPTO_PAIRS)} pairs seeded, only new setups will alert.")
+                log.error(f"[WARMUP] {pair}: {e}")
+        log.info(f"[WARMUP] Done — {len(CRYPTO_PAIRS)} pairs seeded, only new setups will alert.")
 
     # ── Session filter ────────────────────────────────────────
 
@@ -160,7 +162,7 @@ class VortexScanner:
         try:
             wick_setups = scan_wick_setups(pair)
         except Exception as e:
-            print(f"[WICK INIT ERROR] {pair}: {e}")
+            log.error(f"[WICK INIT ERROR] {pair}: {e}")
             wick_setups = []
         return PairContext(
             pair=pair,
@@ -174,10 +176,9 @@ class VortexScanner:
     def _monitor_trades(self, pair: str, current_price: float):
         """Cek TP/SL hit untuk semua open trade pair ini (semua strategi)."""
         for ct in update_trades_for_pair(pair, current_price):
-            res = "✅ WIN" if ct["result"] == "WIN" else "❌ LOSS"
+            res   = "✅ WIN" if ct["result"] == "WIN" else "❌ LOSS"
             strat = ct.get("strategy", "?")
-            print(f"[{_ts()}] {res} [{strat}]: {pair} {ct['direction']} | "
-                  f"Close={ct['close_price']}")
+            log.info(f"{res} [{strat}]: {pair} {ct['direction']} | Close={ct['close_price']}")
             alert_result(ct)
             self.risk_mgr.on_trade_closed()
 
@@ -207,8 +208,8 @@ class VortexScanner:
                     continue
 
                 if not self.cd_touch.is_on_cooldown(ckey):
-                    print(f"[{_ts()}] ⚠️  [S1] TOUCH: {ctx.pair} @ {current_price:.4f} "
-                          f"| {zone['type']} {zone['pivot']:.4f}")
+                    log.info(f"⚠️  [S1] TOUCH: {ctx.pair} @ {current_price:.4f} "
+                             f"| {zone['type']} {zone['pivot']:.4f}")
                     alert_touch(ctx.pair, current_price,
                                 zone["low"], zone["high"], zone["type"])
                     self.cd_touch.set(ckey)
@@ -242,13 +243,13 @@ class VortexScanner:
                     atr_sl_mult=ctx.params["ATR_SL_MIN_MULT"],
                 ))
                 if not risk.approved:
-                    print(f"[{_ts()}] ⛔ [S1] RISK REJECTED: {ctx.pair} — {risk.reason}")
+                    log.warning(f"⛔ [S1] RISK REJECTED: {ctx.pair} — {risk.reason}")
                     continue
 
                 vol = " 🔥 Volume spike!" if rejection.get("volume_spike") else ""
-                print(f"[{_ts()}] ✅ [S1] ENTRY: {ctx.pair} {valid_dir} | "
-                      f"E={trade['entry']} SL={trade['sl']} TP={trade['tp']} "
-                      f"RR={risk.rr_ratio} Size=${risk.position_usdt}{vol}")
+                log.info(f"✅ [S1] ENTRY: {ctx.pair} {valid_dir} | "
+                         f"E={trade['entry']} SL={trade['sl']} TP={trade['tp']} "
+                         f"RR={risk.rr_ratio} Size=${risk.position_usdt}{vol}")
                 alert_entry(ctx.pair, valid_dir,
                             trade["entry"], trade["sl"], trade["tp"],
                             trade["rr"], position_usdt=risk.position_usdt)
@@ -261,8 +262,7 @@ class VortexScanner:
                 self.cd_entry.set(ckey)
 
         except Exception as e:
-            print(f"[S1 ERROR] {ctx.pair}: {e}")
-            traceback.print_exc()
+            log.error(f"[S1 ERROR] {ctx.pair}: {e}", exc_info=True)
 
     # ── Strategy 2: Wick Fill ─────────────────────────────────
 
@@ -275,8 +275,8 @@ class VortexScanner:
                 wk  = f"{ctx.pair}_{direction}_{setup['tf']}_{ref:.4f}"
 
                 if wk not in self._seen_wick:
-                    print(f"[{_ts()}] 🕯️  [S2] WICK {direction}: {ctx.pair} "
-                          f"{setup['tf_label']} | Ref={ref} | {setup['confluence_label']}")
+                    log.info(f"🕯️  [S2] WICK {direction}: {ctx.pair} "
+                             f"{setup['tf_label']} | Ref={ref} | {setup['confluence_label']}")
                     alert_wick_detected(setup)
                     self._seen_wick.add(wk)
 
@@ -318,12 +318,12 @@ class VortexScanner:
                     atr_sl_mult=ctx.params["ATR_SL_MIN_MULT"],
                 ))
                 if not risk.approved:
-                    print(f"[{_ts()}] ⛔ [S2] RISK REJECTED: {ctx.pair} — {risk.reason}")
+                    log.warning(f"⛔ [S2] RISK REJECTED: {ctx.pair} — {risk.reason}")
                     continue
 
-                print(f"[{_ts()}] ✅ [S2] WICK ENTRY {direction}: {ctx.pair} "
-                      f"{setup['tf_label']} @ {setup['current_price']} "
-                      f"Size=${risk.position_usdt}")
+                log.info(f"✅ [S2] WICK ENTRY {direction}: {ctx.pair} "
+                         f"{setup['tf_label']} @ {setup['current_price']} "
+                         f"Size=${risk.position_usdt}")
                 alert_wick_entry(setup, position_usdt=risk.position_usdt)
                 log_signal(ctx.pair, direction, t["entry"], t["sl"], t["tp2"],
                            regime_state=ctx.btc_macro, strategy="S2",
@@ -333,8 +333,7 @@ class VortexScanner:
                 self.cd_wick_e.set(wk)
 
         except Exception as e:
-            print(f"[S2 ERROR] {ctx.pair}: {e}")
-            traceback.print_exc()
+            log.error(f"[S2 ERROR] {ctx.pair}: {e}", exc_info=True)
 
     # ── Strategy 3: FVG Reclaim ───────────────────────────────
 
@@ -356,9 +355,9 @@ class VortexScanner:
                         continue
 
                 if fk not in self._seen_fvg:
-                    print(f"[{_ts()}] 🔷 [S3] FVG: {ctx.pair} {setup['tf_label']} "
-                          f"{direction} | Zone {setup['fvg']['fvg_low']}-"
-                          f"{setup['fvg']['fvg_high']} | Score={setup['confluence_score']}")
+                    log.info(f"🔷 [S3] FVG: {ctx.pair} {setup['tf_label']} "
+                             f"{direction} | Zone {setup['fvg']['fvg_low']}-"
+                             f"{setup['fvg']['fvg_high']} | Score={setup['confluence_score']}")
                     alert_fvg_detected(setup)
                     self._seen_fvg.add(fk)
 
@@ -393,12 +392,12 @@ class VortexScanner:
                     atr_sl_mult=ctx.params["ATR_SL_MIN_MULT"],
                 ))
                 if not risk.approved:
-                    print(f"[{_ts()}] ⛔ [S3] RISK REJECTED: {ctx.pair} — {risk.reason}")
+                    log.warning(f"⛔ [S3] RISK REJECTED: {ctx.pair} — {risk.reason}")
                     continue
 
-                print(f"[{_ts()}] ✅ [S3] FVG ENTRY: {ctx.pair} {direction} "
-                      f"@ {t['entry']} | Score={setup['confluence_score']} "
-                      f"RR={risk.rr_ratio} Size=${risk.position_usdt}")
+                log.info(f"✅ [S3] FVG ENTRY: {ctx.pair} {direction} "
+                         f"@ {t['entry']} | Score={setup['confluence_score']} "
+                         f"RR={risk.rr_ratio} Size=${risk.position_usdt}")
                 alert_fvg_entry(setup, position_usdt=risk.position_usdt)
                 log_signal(ctx.pair, direction, t["entry"], t["sl"], t["tp2"],
                            confluence_score=setup["confluence_score"],
@@ -409,8 +408,7 @@ class VortexScanner:
                 self.cd_fvg_e.set(fk)
 
         except Exception as e:
-            print(f"[S3 ERROR] {ctx.pair}: {e}")
-            traceback.print_exc()
+            log.error(f"[S3 ERROR] {ctx.pair}: {e}", exc_info=True)
 
     # ── Scan cycle ────────────────────────────────────────────
 
@@ -420,7 +418,7 @@ class VortexScanner:
 
         for pair in CRYPTO_PAIRS:
             if not self._is_trading_session(pair):
-                print(f"[{_ts()}] ⏸️  {pair} — di luar jam trading (weekend gap), skip")
+                log.info(f"⏸️  {pair} — di luar jam trading (weekend gap), skip")
                 continue
 
             try:
@@ -428,7 +426,7 @@ class VortexScanner:
                 candles_30m   = get_candles(pair, "30m", limit=5)
                 current_price = candles_30m[-1]["close"]
             except Exception as e:
-                print(f"[PRICE ERROR] {pair}: {e}")
+                log.error(f"[PRICE ERROR] {pair}: {e}")
                 time.sleep(0.3)
                 continue
 
@@ -444,10 +442,10 @@ class VortexScanner:
     # ── Main loop ─────────────────────────────────────────────
 
     def run(self):
-        print("=" * 50)
-        print(f"🤖 VORTEX — 3 Strategies | {len(CRYPTO_PAIRS)} pairs")
-        print(f"⏱️  Interval: {SCAN_INTERVAL_SECONDS}s")
-        print("=" * 50)
+        log.info("=" * 50)
+        log.info(f"🤖 VORTEX — 3 Strategies | {len(CRYPTO_PAIRS)} pairs")
+        log.info(f"⏱️  Interval: {SCAN_INTERVAL_SECONDS}s")
+        log.info("=" * 50)
 
         alert_info(
             f"🤖 Vortex aktif — 3 strategi\n"
@@ -459,7 +457,7 @@ class VortexScanner:
 
         while True:
             scan_start = time.time()
-            print(f"\n[{_ts()}] Scanning {len(CRYPTO_PAIRS)} pairs...")
+            log.info(f"Scanning {len(CRYPTO_PAIRS)} pairs...")
 
             # Fix 5: cache macro — EMA200 1W berubah sangat lambat
             try:
@@ -470,12 +468,12 @@ class VortexScanner:
                       now - self._macro_cache[1] >= self._macro_cache_ttl):
                     btc_macro = get_btc_macro_regime()
                     self._macro_cache = (btc_macro, now)
-                    print(f"[{_ts()}] 🌍 Macro (refreshed): "
-                          f"{'🟢 BULL' if btc_macro == 'BULL' else '🔴 BEAR'}")
+                    log.info(f"🌍 Macro (refreshed): "
+                             f"{'🟢 BULL' if btc_macro == 'BULL' else '🔴 BEAR'}")
                 else:
                     btc_macro = self._macro_cache[0]
             except Exception as e:
-                print(f"[MACRO ERROR] {e} — defaulting to BULL")
+                log.error(f"[MACRO ERROR] {e} — defaulting to BULL")
                 btc_macro = "BULL"
 
             self.scan_once(btc_macro)
@@ -486,27 +484,23 @@ class VortexScanner:
                 self.last_stats_date = today
                 stats    = get_stats()
                 risk_st  = self.risk_mgr.status()
-                print(f"[STATS] WR={stats['winrate']}% "
-                      f"W={stats['wins']} L={stats['losses']} "
-                      f"Open={stats['open']} | "
-                      f"DailyRisk={risk_st['daily_risk_used']}%")
+                log.info(f"[STATS] WR={stats['winrate']}% "
+                         f"W={stats['wins']} L={stats['losses']} "
+                         f"Open={stats['open']} | "
+                         f"DailyRisk={risk_st['daily_risk_used']}%")
                 for s, d in stats.get("by_strategy", {}).items():
-                    print(f"  [{s}] {d['wins']}W {d['losses']}L WR={d['winrate']}%")
+                    log.info(f"  [{s}] {d['wins']}W {d['losses']}L WR={d['winrate']}%")
                 alert_stats(stats)
                 self.rate_mon.check(CRYPTO_PAIRS)
-                trim_old_trades(keep_closed=500)  # Fix 6
+                trim_old_trades(keep_closed=500)
 
             elapsed    = time.time() - scan_start
             sleep_time = max(0, SCAN_INTERVAL_SECONDS - elapsed)
-            print(f"[{_ts()}] Scan selesai ({elapsed:.1f}s). "
-                  f"Next scan in {sleep_time:.0f}s")
+            log.info(f"Scan selesai ({elapsed:.1f}s). Next scan in {sleep_time:.0f}s")
             time.sleep(sleep_time)
 
 
 # ── Helpers ───────────────────────────────────────────────────
-
-def _ts() -> str:
-    return datetime.now().strftime("%H:%M:%S")
 
 def _find_tp_target(entry: float, opposite_zones: list, direction: str) -> float | None:
     """

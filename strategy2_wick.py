@@ -1,5 +1,8 @@
 import numpy as np
 from strategy1_liquidity import get_candles
+from vortex_logger import get_logger
+
+log = get_logger(__name__)
 
 # ── Parameter Strategy 2 ─────────────────────────────────────
 WICK_MIN_BODY_RATIO   = 1.5    # Wick minimal 1.5x body size
@@ -326,7 +329,7 @@ def scan_wick_setups(pair: str) -> list[dict]:
                     })
 
         except Exception as e:
-            print(f"[WICK ERROR] {pair} {tf}: {e}")
+            log.error(f"[WICK ERROR] {pair} {tf}: {e}")
 
     results.sort(key=lambda x: tf_order.get(x["tf"], 99))
     return results

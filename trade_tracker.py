@@ -3,6 +3,10 @@ import os
 import time
 from datetime import datetime
 
+from vortex_logger import get_logger
+
+log = get_logger(__name__)
+
 TRADES_FILE = os.path.join(os.path.dirname(__file__), "trades.json")
 
 
@@ -142,4 +146,4 @@ def trim_old_trades(keep_closed: int = 500):
 
     closed_trimmed = closed[-keep_closed:]
     _save(open_ + closed_trimmed)
-    print(f"[TRIM] trades.json: {len(closed)} → {len(closed_trimmed)} closed trades")
+    log.info(f"[TRIM] trades.json: {len(closed)} → {len(closed_trimmed)} closed trades")
