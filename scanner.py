@@ -17,9 +17,11 @@ from strategy1_liquidity import (
 )
 from strategy2_wick import scan_wick_setups
 from strategy3_fvg import scan_fvg_setups
+from strategy4_vpattern import scan_vpattern_setups, STRAT4_MIN_SCORE
 from telegram_bot import alert_touch, alert_entry, alert_result, alert_stats, alert_info
 from wick_alerts import alert_wick_detected, alert_wick_entry
 from fvg_alerts import alert_fvg_detected, alert_fvg_entry
+from vpattern_alerts import alert_vpattern_detected, alert_vpattern_entry
 from trade_tracker import log_signal, update_trades_for_pair, get_stats, trim_old_trades
 from risk_manager import RiskManager, TradeSetup
 
@@ -31,10 +33,11 @@ log = get_logger(__name__)
 @dataclass
 class PairContext:
     """State yang dikompute sekali per pair, dipakai semua strategi."""
-    pair:        str
-    btc_macro:   str
-    wick_setups: list = field(default_factory=list)
-    params:      dict = field(default_factory=dict)  # pair-specific overrides
+    pair:             str
+    btc_macro:        str
+    wick_setups:      list = field(default_factory=list)
+    vpattern_setups:  list = field(default_factory=list)
+    params:           dict = field(default_factory=dict)  # pair-specific overrides
 
 
 # ── Alert cooldown store ──────────────────────────────────────
@@ -91,10 +94,13 @@ class VortexScanner:
         self.cd_wick_e = CooldownStore()
         self.cd_fvg_e  = CooldownStore()
 
-        # Permanent seen sets — "detected" alert hanya fire SEKALI per wick/FVG candle unik.
+        # Permanent seen sets — "detected" alert hanya fire SEKALI per wick/FVG/VPattern candle unik.
         # Tidak pakai time-based cooldown agar tidak blast saat cooldown expire bersamaan.
-        self._seen_wick: set[str] = set()
-        self._seen_fvg:  set[str] = set()
+        self._seen_wick:     set[str] = set()
+        self._seen_fvg:      set[str] = set()
+        self._seen_vpattern: set[str] = set()
+
+        self.cd_vpattern_e = CooldownStore()
 
         self.rate_mon        = SignalRateMonitor()
         self.risk_mgr        = RiskManager()
@@ -130,6 +136,12 @@ class VortexScanner:
                     direction = setup["direction"]
                     fk = f"{pair}_{direction}_{setup['fvg']['fvg_low']:.4f}"
                     self._seen_fvg.add(fk)
+                # V Pattern — masukkan ke permanent seen set
+                for setup in scan_vpattern_setups(pair):
+                    direction = setup["direction"]
+                    ref = setup.get("v_low") or setup.get("v_high", 0)
+                    vk  = f"{pair}_{direction}_{setup['tf']}_{ref:.4f}"
+                    self._seen_vpattern.add(vk)
             except Exception as e:
                 log.error(f"[WARMUP] {pair}: {e}")
         log.info(f"[WARMUP] Done — {len(CRYPTO_PAIRS)} pairs seeded, only new setups will alert.")
@@ -164,10 +176,16 @@ class VortexScanner:
         except Exception as e:
             log.error(f"[WICK INIT ERROR] {pair}: {e}")
             wick_setups = []
+        try:
+            vpattern_setups = scan_vpattern_setups(pair)
+        except Exception as e:
+            log.error(f"[VPATTERN INIT ERROR] {pair}: {e}")
+            vpattern_setups = []
         return PairContext(
             pair=pair,
             btc_macro=btc_macro,
             wick_setups=wick_setups,
+            vpattern_setups=vpattern_setups,
             params=get_pair_params(pair),
         )
 
@@ -410,6 +428,82 @@ class VortexScanner:
         except Exception as e:
             log.error(f"[S3 ERROR] {ctx.pair}: {e}", exc_info=True)
 
+    # ── Strategy 4: V Pattern ─────────────────────────────────
+
+    def _scan_s4(self, ctx: PairContext):
+        try:
+            for setup in ctx.vpattern_setups:
+                if setup["confidence_score"] < STRAT4_MIN_SCORE:
+                    continue
+
+                direction = setup["direction"]
+                ref = setup.get("v_low") or setup.get("v_high", 0)
+                vk  = f"{ctx.pair}_{direction}_{setup['tf']}_{ref:.4f}"
+
+                if ENABLE_MACRO_FILTER and ctx.pair not in OWN_MACRO_PAIRS:
+                    if direction == "LONG"  and ctx.btc_macro == "BEAR":
+                        continue
+                    if direction == "SHORT" and ctx.btc_macro == "BULL":
+                        continue
+
+                if vk not in self._seen_vpattern:
+                    log.info(f"📐 [S4] V PATTERN {setup['pattern']}: {ctx.pair} "
+                             f"{setup['tf_label']} | Score={setup['confidence_score']} "
+                             f"| {setup['confidence_label']}")
+                    alert_vpattern_detected(setup)
+                    self._seen_vpattern.add(vk)
+
+                if not setup["in_entry_zone"]:
+                    continue
+                if self.cd_vpattern_e.is_on_cooldown(vk):
+                    continue
+
+                # Entry confirmation — 30m (sesuai MTF: entry timing di 30m)
+                candles_30m = get_candles(ctx.pair, "30m", limit=50)
+                req_vol     = ctx.params["REQUIRE_VOLUME_SPIKE"]
+
+                if direction == "LONG":
+                    v_zone    = {"low": ref * 0.998, "high": setup.get("post_high", ref * 1.02),
+                                 "pivot": ref}
+                    rejection = check_rejection_long(candles_30m, v_zone,
+                                                     vol_spike_required=req_vol)
+                else:
+                    v_zone    = {"low": setup.get("post_low", ref * 0.98), "high": ref * 1.002,
+                                 "pivot": ref}
+                    rejection = check_rejection_short(candles_30m, v_zone,
+                                                      vol_spike_required=req_vol)
+
+                if not (rejection and rejection["confirmed"]):
+                    continue
+
+                t    = setup["trade"]
+                risk = self.risk_mgr.evaluate(TradeSetup(
+                    pair=ctx.pair, direction=direction,
+                    entry=t["entry"], sl=t["sl"], tp=t["tp2"],
+                    strategy="S4",
+                    risk_pct=ctx.params["RISK_PCT"],
+                    min_rr=ctx.params["MIN_RR_RATIO"],
+                    atr_sl_mult=ctx.params["ATR_SL_MIN_MULT"],
+                ))
+                if not risk.approved:
+                    log.warning(f"⛔ [S4] RISK REJECTED: {ctx.pair} — {risk.reason}")
+                    continue
+
+                log.info(f"✅ [S4] V PATTERN ENTRY {direction}: {ctx.pair} "
+                         f"{setup['tf_label']} @ {t['entry']} "
+                         f"Score={setup['confidence_score']} Size=${risk.position_usdt}")
+                alert_vpattern_entry(setup, position_usdt=risk.position_usdt)
+                log_signal(ctx.pair, direction, t["entry"], t["sl"], t["tp2"],
+                           confluence_score=int(setup["confidence_score"]),
+                           regime_state=ctx.btc_macro, strategy="S4",
+                           position_usdt=risk.position_usdt)
+                self.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
+                self.rate_mon.track(ctx.pair)
+                self.cd_vpattern_e.set(vk)
+
+        except Exception as e:
+            log.error(f"[S4 ERROR] {ctx.pair}: {e}", exc_info=True)
+
     # ── Scan cycle ────────────────────────────────────────────
 
     def scan_once(self, btc_macro: str):
@@ -437,21 +531,23 @@ class VortexScanner:
             self._scan_s1(ctx, current_price)
             self._scan_s2(ctx)
             self._scan_s3(ctx)
+            self._scan_s4(ctx)
             time.sleep(0.3)
 
     # ── Main loop ─────────────────────────────────────────────
 
     def run(self):
         log.info("=" * 50)
-        log.info(f"🤖 VORTEX — 3 Strategies | {len(CRYPTO_PAIRS)} pairs")
+        log.info(f"🤖 VORTEX — 4 Strategies | {len(CRYPTO_PAIRS)} pairs")
         log.info(f"⏱️  Interval: {SCAN_INTERVAL_SECONDS}s")
         log.info("=" * 50)
 
         alert_info(
-            f"🤖 Vortex aktif — 3 strategi\n"
+            f"🤖 Vortex aktif — 4 strategi\n"
             f"Strat 1: Liquidity Grab\n"
             f"Strat 2: Wick Fill\n"
             f"Strat 3: FVG Reclaim\n"
+            f"Strat 4: V Pattern (MTF: 4H+1D, entry 30m)\n"
             f"Pairs: {len(CRYPTO_PAIRS)} | Interval: {SCAN_INTERVAL_SECONDS}s"
         )
 

@@ -2,7 +2,7 @@
 
 AI trading signal agent untuk crypto & gold — scanner only, tidak eksekusi trade otomatis.
 
-Menjalankan **3 strategi** secara paralel setiap scan cycle dengan risk management terintegrasi di **13 pairs** (12 crypto + XAUUSDT).
+Menjalankan **4 strategi** secara paralel setiap scan cycle dengan risk management terintegrasi di **13 pairs** (12 crypto + XAUUSDT).
 
 ---
 
@@ -32,6 +32,26 @@ Menjalankan **3 strategi** secara paralel setiap scan cycle dengan risk manageme
    - LONG: SL 0.8% di bawah wick low, TP1: 50% fill, TP2: 100% fill (body bottom)
    - SHORT: SL 0.8% di atas wick high, TP1: 50% fill, TP2: 100% fill (body top)
 5. **Confluence Scoring** — dekat EMA50 (+2), massive wick (+1), TF lebih tinggi (+1/+2)
+
+### Strategy 4 — V Pattern (Sharp Reversal)
+
+**MTF approach:** Deteksi 4H → Bias 1D → Entry konfirmasi 30m
+
+1. **V-Bottom (Bullish)** / **V-Top (Bearish)** terdeteksi di 4H atau 1D:
+   - Sharp move ≥ 1.8x ATR dalam 3-8 candle
+   - Diikuti reversal ≥ 60% dari move awal
+   - Rejection candle / long wick (≥30% range) di titik V
+2. **1D Bias check** — EMA50 1D harus searah dengan arah V (LONG/SHORT) → +1 score
+3. **Entry zone** — harga masih dalam 80% recovery (upside/downside tersisa)
+4. **Entry confirmation** — rejection candle di 30m (lebih reliable dari 5m untuk pola besar)
+5. **Trade calculation**:
+   - SL: 0.5% di luar titik V (low untuk V-Bottom, high untuk V-Top)
+   - TP1: Neckline (pre-drop high / pre-rally low)
+   - TP2: Extension 1:1 (neckline ± move size)
+6. **Liquidity sweep bonus** — jika V point menembus recent swing sebelum reversal: +1.5 score
+7. **Min score**: 5.5/10 untuk kirim alert, termasuk 1D = 6.0/10 secara efektif
+
+---
 
 ### Strategy 3 — FVG Reclaim after Liquidity Sweep
 
@@ -146,6 +166,8 @@ tail -f /tmp/scanner.log
 | ✅ [S2] WICK FILL ENTRY | S2 | Harga masuk entry zone + rejection 5m |
 | 🔷 [S3] FVG SETUP | S3 | Liquidity sweep + FVG terdeteksi |
 | ✅ [S3] FVG ENTRY | S3 | Harga retrace ke FVG + rejection 5m |
+| 📐 [S4] V PATTERN | S4 | V-Bottom / V-Top terdeteksi (4H/1D) |
+| ✅ [S4] V PATTERN ENTRY | S4 | Harga di entry zone + rejection 30m |
 | ✅/❌ [Sx] WIN/LOSS | Semua | Hasil trade setelah hit TP atau SL |
 | 📊 WINRATE | Semua | Laporan harian (sekali per hari) — total + breakdown per strategi |
 
@@ -163,6 +185,8 @@ tail -f /tmp/scanner.log
 ├── telegram_bot.py        # Alert S1 + stats
 ├── wick_alerts.py         # Alert S2
 ├── fvg_alerts.py          # Alert S3
+├── strategy4_vpattern.py  # S4: V Pattern Sharp Reversal (4H+1D, entry 30m)
+├── vpattern_alerts.py     # Alert S4
 ├── trade_tracker.py       # Catat sinyal, monitor TP/SL, winrate + per-strategy breakdown
 ├── trades.json            # Data hasil tracking (auto-generated, auto-trimmed 500 entries)
 └── requirements.txt
