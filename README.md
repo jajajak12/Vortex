@@ -133,7 +133,7 @@ tail -f /tmp/scanner.log
 | 🔷 [S3] FVG SETUP | S3 | Liquidity sweep + FVG terdeteksi |
 | ✅ [S3] FVG ENTRY | S3 | Harga retrace ke FVG + rejection 5m |
 | ✅/❌ [Sx] WIN/LOSS | Semua | Hasil trade setelah hit TP atau SL |
-| 📊 WINRATE | Semua | Laporan harian — total + breakdown per strategi |
+| 📊 WINRATE | Semua | Laporan harian (sekali per hari) — total + breakdown per strategi |
 
 ---
 
