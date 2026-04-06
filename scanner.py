@@ -86,10 +86,13 @@ class VortexScanner:
         # Cooldown store per alert type
         self.cd_touch  = CooldownStore()
         self.cd_entry  = CooldownStore()
-        self.cd_wick_d = CooldownStore()
         self.cd_wick_e = CooldownStore()
-        self.cd_fvg_d  = CooldownStore()
         self.cd_fvg_e  = CooldownStore()
+
+        # Permanent seen sets — "detected" alert hanya fire SEKALI per wick/FVG candle unik.
+        # Tidak pakai time-based cooldown agar tidak blast saat cooldown expire bersamaan.
+        self._seen_wick: set[str] = set()
+        self._seen_fvg:  set[str] = set()
 
         self.rate_mon        = SignalRateMonitor()
         self.risk_mgr        = RiskManager()
@@ -113,18 +116,18 @@ class VortexScanner:
         print("[WARMUP] Pre-scanning existing setups (suppressing launch alerts)...")
         for pair in CRYPTO_PAIRS:
             try:
-                # Wick
+                # Wick — masukkan ke permanent seen set
                 for setup in scan_wick_setups(pair):
                     direction = setup.get("direction", "LONG")
                     w   = setup["wick"]
                     ref = w.get("wick_low") or w.get("wick_high", 0)
                     wk  = f"{pair}_{direction}_{setup['tf']}_{ref:.4f}"
-                    self.cd_wick_d.set(wk)
-                # FVG
+                    self._seen_wick.add(wk)
+                # FVG — masukkan ke permanent seen set
                 for setup in scan_fvg_setups(pair):
                     direction = setup["direction"]
                     fk = f"{pair}_{direction}_{setup['fvg']['fvg_low']:.4f}"
-                    self.cd_fvg_d.set(fk)
+                    self._seen_fvg.add(fk)
             except Exception as e:
                 print(f"[WARMUP] {pair}: {e}")
         print(f"[WARMUP] Done — {len(CRYPTO_PAIRS)} pairs seeded, only new setups will alert.")
@@ -271,11 +274,11 @@ class VortexScanner:
                 ref = w.get("wick_low") or w.get("wick_high", 0)
                 wk  = f"{ctx.pair}_{direction}_{setup['tf']}_{ref:.4f}"
 
-                if not self.cd_wick_d.is_on_cooldown(wk):
+                if wk not in self._seen_wick:
                     print(f"[{_ts()}] 🕯️  [S2] WICK {direction}: {ctx.pair} "
                           f"{setup['tf_label']} | Ref={ref} | {setup['confluence_label']}")
                     alert_wick_detected(setup)
-                    self.cd_wick_d.set(wk)
+                    self._seen_wick.add(wk)
 
                 if ENABLE_MACRO_FILTER and ctx.pair not in OWN_MACRO_PAIRS:
                     if direction == "LONG"  and ctx.btc_macro == "BEAR":
@@ -352,12 +355,12 @@ class VortexScanner:
                     if direction == "SHORT" and ctx.btc_macro == "BULL":
                         continue
 
-                if not self.cd_fvg_d.is_on_cooldown(fk):
+                if fk not in self._seen_fvg:
                     print(f"[{_ts()}] 🔷 [S3] FVG: {ctx.pair} {setup['tf_label']} "
                           f"{direction} | Zone {setup['fvg']['fvg_low']}-"
                           f"{setup['fvg']['fvg_high']} | Score={setup['confluence_score']}")
                     alert_fvg_detected(setup)
-                    self.cd_fvg_d.set(fk)
+                    self._seen_fvg.add(fk)
 
                 if not setup["in_fvg_zone"]:
                     continue

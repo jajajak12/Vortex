@@ -176,6 +176,6 @@ tail -f /tmp/scanner.log
 - `config.py` di-gitignore, jangan pernah di-push ke repo
 - BTC macro (EMA200 1W) di-cache 1 jam — tidak fetch API tiap cycle
 - `trades.json` otomatis trim ke 500 closed trades terbaru setiap hari
-- Startup warmup: wick & FVG yang sudah ada di-seed ke cooldown saat launch — tidak ada alert blast
+- Startup warmup: wick & FVG yang sudah ada di-seed ke `_seen_wick`/`_seen_fvg` (permanent set) saat launch — alert "DETECTED" hanya fire sekali per wick candle unik, tidak blast ulang setelah cooldown expire
 - Sedang dalam fase **paper trading** — observasi winrate sebelum real trade
 - Target winrate >45-50% sebelum pertimbangkan real trade

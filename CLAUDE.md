@@ -19,14 +19,20 @@ tail -f /tmp/scanner.log
 
 ## File Structure
 - `config.py` — kredensial & parameter (di-.gitignore, JANGAN push)
-- `scanner.py` — main loop, scan setiap 60s
-- `strategy1_liquidity.py` — logika strategi + Binance API calls
-- `telegram_bot.py` — alert functions (touch, entry, result, stats)
-- `trade_tracker.py` — catat signal, monitor TP/SL, hitung winrate
+- `scanner.py` — main loop + VortexScanner class (warmup, session filter, 3 strategi)
+- `strategy1_liquidity.py` — S1 logic + shared utilities (candles, ATR, zones, rejection check)
+- `strategy2_wick.py` — S2 Wick Fill (1W/1D/4H, LONG & SHORT)
+- `strategy3_fvg.py` — S3 FVG Reclaim after Liquidity Sweep
+- `risk_manager.py` — RiskManager: position sizing + 4 gate (RR, ATR SL, max open, daily risk)
+- `telegram_bot.py` / `wick_alerts.py` / `fvg_alerts.py` — alert per strategi
+- `trade_tracker.py` — catat signal, monitor TP/SL, hitung winrate per strategi
 - `trades.json` — hasil tracking (auto-generated saat runtime)
 
 ## Pairs Aktif
-BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT
+BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT,
+XRPUSDT, ADAUSDT, AVAXUSDT, DOGEUSDT,
+DOTUSDT, LINKUSDT, MATICUSDT, ATOMUSDT,
+XAUUSDT (gold — session filter + own macro)
 
 ## Strategi: Fresh Liquidity Grab + Rejection
 1. **Zone detection** (4H): cari swing high/low yang:
@@ -46,9 +52,12 @@ BTCUSDT, ETHUSDT, BNBUSDT, SOLUSDT
 - 📊 WINRATE — laporan tiap ~1 jam
 
 ## Bug yang Sudah Difix
-1. `is_touching_zone` — sebelumnya tidak ada batas bawah/atas, sekarang price harus dalam [low-buffer, high+buffer]
-2. `is_mitigated` — zona yang sudah pernah dikunjungi setelah terbentuk dibuang
-3. SL placement — sebelumnya pakai prev liquidity yang bisa sangat jauh (contoh: 7% SL), sekarang pakai zone boundary
+1. `is_touching_zone` — price harus dalam [low-buffer, high+buffer], bukan satu sisi
+2. `is_mitigated` — zona yang sudah dikunjungi ulang setelah terbentuk dibuang
+3. SL placement — pakai zone boundary, bukan prev liquidity (dulu bisa 7%+ jauh)
+4. Daily risk calc, pair-specific touch threshold, S2 SHORT wick detection
+5. Startup alert blast — `_warmup()` pre-seed `cd_wick_d` & `cd_fvg_d` saat launch
+6. Cooldown expiry blast — `cd_wick_d`/`cd_fvg_d` diganti permanent `_seen_wick`/`_seen_fvg` set (alert DETECTED hanya fire sekali per wick candle unik, tidak blast ulang tiap 4 jam)
 
 ## Git / Push
 ```bash
@@ -60,7 +69,14 @@ git remote set-url origin https://github.com/jajajak12/Vortex.git  # reset token
 ```
 PAT: tanya user (classic token dengan scope repo).
 
+## XAUUSDT — Catatan Penting
+- `OWN_MACRO_PAIRS` — pakai htf_bias EMA50 4H gold sendiri, bukan BTC EMA200 1W
+- `SESSION_FILTER_PAIRS` — skip scan saat weekend gap: Jumat 21:00 UTC → Minggu 22:00 UTC
+- Data masih Spot client — ganti ke `futures_klines()` nanti jika perlu lebih liquid
+- PAIR_OVERRIDES di config sudah ada: risk 0.5%, min RR 2.5, ATR SL 1×, no vol spike
+
 ## Rencana ke Depan
-- Observasi winrate dulu (paper trading) 2-4 minggu
-- Jika winrate >45-50%, pertimbangkan real trade
-- Potential improvement: filter trend HTF, naikkan RR ke 1:2
+- Phase 1 (sekarang): paper trading 13 pairs, observasi winrate 2-4 minggu
+- Phase 2 (jika winrate bagus): automation order execution
+  - Perlu: `order_executor.py`, Binance write API key, position reconciliation
+- Target winrate >45-50% sebelum real trade
