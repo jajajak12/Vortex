@@ -143,7 +143,8 @@ class VortexScanner:
             for zone in all_zones:
                 ckey = f"{ctx.pair}_{zone['type']}_{zone['pivot']:.4f}"
 
-                if not is_touching_zone(current_price, zone):
+                if not is_touching_zone(current_price, zone,
+                                        threshold_pct=ctx.params["TOUCH_THRESHOLD_PCT"]):
                     continue
 
                 if not self.cd_touch.is_on_cooldown(ckey):
@@ -196,7 +197,7 @@ class VortexScanner:
                            trade["sl"], trade["tp"],
                            regime_state=ctx.btc_macro, strategy="S1",
                            position_usdt=risk.position_usdt)
-                self.risk_mgr.on_trade_opened()
+                self.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
                 self.rate_mon.track(ctx.pair)
                 self.cd_entry.set(ckey)
 
@@ -209,16 +210,22 @@ class VortexScanner:
     def _scan_s2(self, ctx: PairContext):
         try:
             for setup in ctx.wick_setups:
-                wk = f"{ctx.pair}_{setup['tf']}_{setup['wick']['wick_low']:.4f}"
+                direction = setup.get("direction", "LONG")
+                w   = setup["wick"]
+                ref = w.get("wick_low") or w.get("wick_high", 0)
+                wk  = f"{ctx.pair}_{direction}_{setup['tf']}_{ref:.4f}"
 
                 if not self.cd_wick_d.is_on_cooldown(wk):
-                    print(f"[{_ts()}] 🕯️  [S2] WICK: {ctx.pair} {setup['tf_label']} "
-                          f"| Low={setup['wick']['wick_low']} | {setup['confluence_label']}")
+                    print(f"[{_ts()}] 🕯️  [S2] WICK {direction}: {ctx.pair} "
+                          f"{setup['tf_label']} | Ref={ref} | {setup['confluence_label']}")
                     alert_wick_detected(setup)
                     self.cd_wick_d.set(wk)
 
-                if ENABLE_MACRO_FILTER and ctx.btc_macro == "BEAR":
-                    continue
+                if ENABLE_MACRO_FILTER:
+                    if direction == "LONG"  and ctx.btc_macro == "BEAR":
+                        continue
+                    if direction == "SHORT" and ctx.btc_macro == "BULL":
+                        continue
 
                 if not setup["in_entry_zone"]:
                     continue
@@ -226,39 +233,45 @@ class VortexScanner:
                     continue
 
                 candles_5m = get_candles(ctx.pair, "5m", limit=50)
-                wick_zone  = {
-                    "low":   setup["wick"]["wick_low"],
-                    "high":  setup["wick"]["wick_50pct"],
-                    "pivot": setup["wick"]["wick_low"],
-                }
-                rejection = check_rejection_long(
-                    candles_5m, wick_zone,
-                    vol_spike_required=ctx.params["REQUIRE_VOLUME_SPIKE"]
-                )
+                req_vol    = ctx.params["REQUIRE_VOLUME_SPIKE"]
 
-                if rejection and rejection["confirmed"]:
-                    t = setup["trade"]
-                    risk = self.risk_mgr.evaluate(TradeSetup(
-                        pair=ctx.pair, direction="LONG",
-                        entry=t["entry"], sl=t["sl"], tp=t["tp2"],
-                        strategy="S2",
-                        risk_pct=ctx.params["RISK_PCT"],
-                        min_rr=ctx.params["MIN_RR_RATIO"],
-                        atr_sl_mult=ctx.params["ATR_SL_MIN_MULT"],
-                    ))
-                    if not risk.approved:
-                        print(f"[{_ts()}] ⛔ [S2] RISK REJECTED: {ctx.pair} — {risk.reason}")
-                        continue
+                if direction == "LONG":
+                    wick_zone = {"low": w["wick_low"], "high": w["wick_50pct"],
+                                 "pivot": w["wick_low"]}
+                    rejection = check_rejection_long(candles_5m, wick_zone,
+                                                     vol_spike_required=req_vol)
+                else:
+                    wick_zone = {"low": w["wick_50pct"], "high": w["wick_high"],
+                                 "pivot": w["wick_high"]}
+                    rejection = check_rejection_short(candles_5m, wick_zone,
+                                                      vol_spike_required=req_vol)
 
-                    print(f"[{_ts()}] ✅ [S2] WICK ENTRY: {ctx.pair} {setup['tf_label']} "
-                          f"@ {setup['current_price']} Size=${risk.position_usdt}")
-                    alert_wick_entry(setup, position_usdt=risk.position_usdt)
-                    log_signal(ctx.pair, "LONG", t["entry"], t["sl"], t["tp2"],
-                               regime_state=ctx.btc_macro, strategy="S2",
-                               position_usdt=risk.position_usdt)
-                    self.risk_mgr.on_trade_opened()
-                    self.rate_mon.track(ctx.pair)
-                    self.cd_wick_e.set(wk)
+                if not (rejection and rejection["confirmed"]):
+                    continue
+
+                t    = setup["trade"]
+                risk = self.risk_mgr.evaluate(TradeSetup(
+                    pair=ctx.pair, direction=direction,
+                    entry=t["entry"], sl=t["sl"], tp=t["tp2"],
+                    strategy="S2",
+                    risk_pct=ctx.params["RISK_PCT"],
+                    min_rr=ctx.params["MIN_RR_RATIO"],
+                    atr_sl_mult=ctx.params["ATR_SL_MIN_MULT"],
+                ))
+                if not risk.approved:
+                    print(f"[{_ts()}] ⛔ [S2] RISK REJECTED: {ctx.pair} — {risk.reason}")
+                    continue
+
+                print(f"[{_ts()}] ✅ [S2] WICK ENTRY {direction}: {ctx.pair} "
+                      f"{setup['tf_label']} @ {setup['current_price']} "
+                      f"Size=${risk.position_usdt}")
+                alert_wick_entry(setup, position_usdt=risk.position_usdt)
+                log_signal(ctx.pair, direction, t["entry"], t["sl"], t["tp2"],
+                           regime_state=ctx.btc_macro, strategy="S2",
+                           position_usdt=risk.position_usdt)
+                self.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
+                self.rate_mon.track(ctx.pair)
+                self.cd_wick_e.set(wk)
 
         except Exception as e:
             print(f"[S2 ERROR] {ctx.pair}: {e}")
@@ -332,7 +345,7 @@ class VortexScanner:
                            confluence_score=setup["confluence_score"],
                            regime_state=ctx.btc_macro, strategy="S3",
                            position_usdt=risk.position_usdt)
-                self.risk_mgr.on_trade_opened()
+                self.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
                 self.rate_mon.track(ctx.pair)
                 self.cd_fvg_e.set(fk)
 

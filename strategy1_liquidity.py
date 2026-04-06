@@ -153,12 +153,15 @@ def get_fresh_liquidity_zones(pair: str) -> dict:
 
     return {"LONG": long_zones, "SHORT": short_zones, "htf_bias": _compute_htf_bias(candles)}
 
-def is_touching_zone(current_price: float, zone: dict) -> bool:
+def is_touching_zone(current_price: float, zone: dict,
+                     threshold_pct: float | None = None) -> bool:
     """
     Cek apakah harga saat ini menyentuh zona liquidity.
     Harga harus berada di dalam [low - buffer, high + buffer].
+    threshold_pct: override TOUCH_THRESHOLD_PCT (pair-specific params).
     """
-    buffer = zone["pivot"] * TOUCH_THRESHOLD_PCT
+    pct    = threshold_pct if threshold_pct is not None else TOUCH_THRESHOLD_PCT
+    buffer = zone["pivot"] * pct
     return (zone["low"] - buffer) <= current_price <= (zone["high"] + buffer)
 
 def check_volume_spike(candles: list[dict], index: int, window: int = 20) -> bool:
