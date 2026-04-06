@@ -20,17 +20,18 @@ Menjalankan **3 strategi** secara paralel setiap scan cycle dengan risk manageme
    - Candle 2: konfirmasi arah (bullish untuk LONG, bearish untuk SHORT)
 5. **Trade Calculation** — SL tepat di luar batas zona, TP ke next liquidity dari struktur pasar (fallback ke 1:1.5 RR)
 
-### Strategy 2 — Wick Fill
+### Strategy 2 — Wick Fill (LONG & SHORT)
 
-1. **Wick Detection (1W / 1D / 4H)** — identifikasi candle dengan long downside wick:
-   - Lower wick ≥ 1.5x body size, ATAU lower wick ≥ 30% total candle range
+1. **Wick Detection (1W / 1D / 4H)** — identifikasi candle dengan long wick signifikan:
+   - **LONG**: downside wick — lower wick ≥ 1.5x body, ATAU ≥ 30% total range
+   - **SHORT**: upside wick — upper wick ≥ 1.5x body, ATAU ≥ 30% total range
    - Wick belum pernah ditest ulang (`is_wick_mitigated = False`)
-2. **Entry Zone** — antara wick low dan level 50% fill
+2. **Entry Zone** — LONG: antara wick low dan 50% level | SHORT: antara wick high dan 50% level
 3. **Entry Signal** — harga masuk entry zone + konfirmasi rejection di 5m
 4. **Trade Calculation**:
-   - SL: 0.8% di bawah wick low
-   - TP1: 50% fill level | TP2: 100% fill level (body bottom)
-5. **Confluence Scoring** — dekat 1W EMA50 (+2), massive wick (+1), TF lebih tinggi (+1/+2)
+   - LONG: SL 0.8% di bawah wick low, TP1: 50% fill, TP2: 100% fill (body bottom)
+   - SHORT: SL 0.8% di atas wick high, TP1: 50% fill, TP2: 100% fill (body top)
+5. **Confluence Scoring** — dekat EMA50 (+2), massive wick (+1), TF lebih tinggi (+1/+2)
 
 ### Strategy 3 — FVG Reclaim after Liquidity Sweep
 
@@ -128,7 +129,7 @@ tail -f /tmp/scanner.log
 |-------|----------|------------|
 | ⚠️ TOUCH | S1 | Harga memasuki zona liquidity |
 | ✅ [S1] ENTRY SIGNAL | S1 | Rejection confirmed + searah HTF |
-| 🕯️ WICK DETECTED | S2 | Long downside wick terdeteksi |
+| 🕯️ [S2] WICK DETECTED | S2 | Long wick terdeteksi (LONG downside / SHORT upside) |
 | ✅ [S2] WICK FILL ENTRY | S2 | Harga masuk entry zone + rejection 5m |
 | 🔷 [S3] FVG SETUP | S3 | Liquidity sweep + FVG terdeteksi |
 | ✅ [S3] FVG ENTRY | S3 | Harga retrace ke FVG + rejection 5m |
