@@ -9,15 +9,25 @@ log = get_logger(__name__)
 
 TRADES_FILE = os.path.join(os.path.dirname(__file__), "trades.json")
 
+# ── In-memory cache — hindari 13× disk read per scan cycle ───
+_cache: list | None = None
 
-def _load():
+
+def _load() -> list:
+    global _cache
+    if _cache is not None:
+        return _cache
     if not os.path.exists(TRADES_FILE):
-        return []
+        _cache = []
+        return _cache
     with open(TRADES_FILE) as f:
-        return json.load(f)
+        _cache = json.load(f)
+    return _cache
 
 
-def _save(trades):
+def _save(trades: list):
+    global _cache
+    _cache = trades
     with open(TRADES_FILE, "w") as f:
         json.dump(trades, f, indent=2)
 

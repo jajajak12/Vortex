@@ -1,4 +1,3 @@
-import numpy as np
 from strategy1_liquidity import get_candles
 from vortex_logger import get_logger
 

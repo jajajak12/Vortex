@@ -1,3 +1,5 @@
+import time as _time
+
 import numpy as np
 from binance.client import Client
 from config import (
@@ -11,6 +13,11 @@ from config import (
 
 client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
 
+# ── Candle TTL cache — hindari duplicate API calls per cycle ─
+# Key: "{pair}_{tf}_{limit}" → (timestamp, candles)
+_candle_cache: dict[str, tuple[float, list]] = {}
+_CACHE_TTL = 55  # detik — sedikit di bawah scan interval 60s
+
 # ── Timeframe mapping ────────────────────────────────────────
 TF_MAP = {
     "5m":  Client.KLINE_INTERVAL_5MINUTE,
@@ -23,18 +30,39 @@ TF_MAP = {
 }
 
 def get_candles(pair: str, tf: str, limit: int = 100) -> list[dict]:
-    """Ambil data OHLCV dari Binance."""
-    raw = client.get_klines(symbol=pair, interval=TF_MAP[tf], limit=limit)
-    candles = []
-    for c in raw:
-        candles.append({
-            "open":   float(c[1]),
-            "high":   float(c[2]),
-            "low":    float(c[3]),
-            "close":  float(c[4]),
-            "volume": float(c[5]),
-        })
-    return candles
+    """
+    Ambil data OHLCV dari Binance.
+    - TTL cache 55s: duplicate call dalam satu scan cycle return data yang sama (no extra API hit).
+    - Retry 2×: backoff 0.5s / 1s jika Binance timeout atau rate-limit.
+    """
+    key = f"{pair}_{tf}_{limit}"
+    now = _time.time()
+    cached = _candle_cache.get(key)
+    if cached and now - cached[0] < _CACHE_TTL:
+        return cached[1]
+
+    last_exc: Exception | None = None
+    for attempt in range(3):
+        try:
+            raw = client.get_klines(symbol=pair, interval=TF_MAP[tf], limit=limit)
+            candles = [
+                {
+                    "open":   float(c[1]),
+                    "high":   float(c[2]),
+                    "low":    float(c[3]),
+                    "close":  float(c[4]),
+                    "volume": float(c[5]),
+                }
+                for c in raw
+            ]
+            _candle_cache[key] = (now, candles)
+            return candles
+        except Exception as e:
+            last_exc = e
+            if attempt < 2:
+                _time.sleep(0.5 * (attempt + 1))
+
+    raise last_exc  # type: ignore[misc]
 
 def calculate_atr(candles: list[dict], period: int = ATR_PERIOD) -> float:
     """Average True Range — dipakai Strat 1 zone filter & Strat 3."""
