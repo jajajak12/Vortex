@@ -1,8 +1,8 @@
 # Vortex
 
-AI trading signal agent untuk crypto — scanner only, tidak eksekusi trade otomatis.
+AI trading signal agent untuk crypto & gold — scanner only, tidak eksekusi trade otomatis.
 
-Menjalankan **3 strategi** secara paralel setiap scan cycle dengan risk management terintegrasi.
+Menjalankan **3 strategi** secara paralel setiap scan cycle dengan risk management terintegrasi di **13 pairs** (12 crypto + XAUUSDT).
 
 ---
 
@@ -67,7 +67,20 @@ Terintegrasi di semua strategi via `RiskManager` singleton:
 BTCUSDT  ETHUSDT  BNBUSDT  SOLUSDT
 XRPUSDT  ADAUSDT  AVAXUSDT DOGEUSDT
 DOTUSDT  LINKUSDT MATICUSDT ATOMUSDT
+XAUUSDT  (Gold — parameter khusus, session filter aktif)
 ```
+
+**XAUUSDT — Treatment Khusus:**
+
+| Parameter | Crypto default | XAUUSDT |
+|-----------|---------------|---------|
+| Risk per trade | 1% | 0.5% (volatility lebih tinggi) |
+| Min RR | 2.0 | 2.5 (lebih selektif) |
+| ATR SL multiplier | 0.5× | 1.0× (stop hunt lebih ganas) |
+| Volume spike required | Ya | Tidak (volume gold di Binance kurang reliable) |
+| Touch threshold | 0.3% | 0.5% (spread lebih besar) |
+| Macro filter | BTC EMA200 1W | Gold EMA50 4H sendiri (tidak ikut BTC) |
+| Session filter | Tidak | Ya — skip Jumat 21:00 UTC → Minggu 22:00 UTC (weekend gap) |
 
 ---
 
@@ -163,5 +176,6 @@ tail -f /tmp/scanner.log
 - `config.py` di-gitignore, jangan pernah di-push ke repo
 - BTC macro (EMA200 1W) di-cache 1 jam — tidak fetch API tiap cycle
 - `trades.json` otomatis trim ke 500 closed trades terbaru setiap hari
+- Startup warmup: wick & FVG yang sudah ada di-seed ke cooldown saat launch — tidak ada alert blast
 - Sedang dalam fase **paper trading** — observasi winrate sebelum real trade
 - Target winrate >45-50% sebelum pertimbangkan real trade

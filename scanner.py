@@ -7,6 +7,7 @@ from typing import Optional
 from config import (
     CRYPTO_PAIRS, SCAN_INTERVAL_SECONDS,
     ENABLE_MACRO_FILTER, SIGNAL_RATE_MIN, STRAT3_MIN_SCORE,
+    OWN_MACRO_PAIRS, SESSION_FILTER_PAIRS,
     get_pair_params,
 )
 from strategy1_liquidity import (
@@ -93,9 +94,62 @@ class VortexScanner:
         self.rate_mon        = SignalRateMonitor()
         self.risk_mgr        = RiskManager()
         self.last_stats_date: Optional[str] = None
-        # Fix 5: BTC macro cache (EMA200 1W berubah sangat lambat)
+        # BTC macro cache (EMA200 1W berubah sangat lambat)
         self._macro_cache:     Optional[tuple[str, float]] = None  # (regime, timestamp)
         self._macro_cache_ttl: int = 3600  # refresh tiap 1 jam
+
+        # Suppress alert blast saat pertama launch
+        self._warmup()
+
+    # ── Startup warmup ────────────────────────────────────────
+
+    def _warmup(self):
+        """
+        Pre-populate cooldown store untuk wick & FVG yang sudah ada.
+        Mencegah alert blast di semua pair saat scanner pertama kali jalan.
+        Hanya cooldown 'detected' yang di-suppress — 'entry' tetap fresh.
+        """
+        from strategy3_fvg import scan_fvg_setups
+        print("[WARMUP] Pre-scanning existing setups (suppressing launch alerts)...")
+        for pair in CRYPTO_PAIRS:
+            try:
+                # Wick
+                for setup in scan_wick_setups(pair):
+                    direction = setup.get("direction", "LONG")
+                    w   = setup["wick"]
+                    ref = w.get("wick_low") or w.get("wick_high", 0)
+                    wk  = f"{pair}_{direction}_{setup['tf']}_{ref:.4f}"
+                    self.cd_wick_d.set(wk)
+                # FVG
+                for setup in scan_fvg_setups(pair):
+                    direction = setup["direction"]
+                    fk = f"{pair}_{direction}_{setup['fvg']['fvg_low']:.4f}"
+                    self.cd_fvg_d.set(fk)
+            except Exception as e:
+                print(f"[WARMUP] {pair}: {e}")
+        print(f"[WARMUP] Done — {len(CRYPTO_PAIRS)} pairs seeded, only new setups will alert.")
+
+    # ── Session filter ────────────────────────────────────────
+
+    @staticmethod
+    def _is_trading_session(pair: str) -> bool:
+        """
+        Return False jika pair sedang di luar jam trading.
+        Khusus gold: tutup Jumat 21:00 UTC s/d Minggu 22:00 UTC (weekend gap).
+        """
+        if pair not in SESSION_FILTER_PAIRS:
+            return True
+        from datetime import timezone
+        now = datetime.now(timezone.utc)
+        wd  = now.weekday()   # 0=Mon … 4=Fri, 5=Sat, 6=Sun
+        h   = now.hour
+        if wd == 5:               # Sabtu — tutup seharian
+            return False
+        if wd == 4 and h >= 21:   # Jumat setelah 21:00 UTC
+            return False
+        if wd == 6 and h < 22:    # Minggu sebelum 22:00 UTC
+            return False
+        return True
 
     # ── Per-pair context ──────────────────────────────────────
 
@@ -131,7 +185,9 @@ class VortexScanner:
             zones    = get_fresh_liquidity_zones(ctx.pair)
             htf_bias = zones["htf_bias"]
 
-            if ENABLE_MACRO_FILTER and htf_bias != ctx.btc_macro:
+            # OWN_MACRO_PAIRS (mis. XAUUSDT) pakai htf_bias pair sendiri, bukan BTC macro
+            if ENABLE_MACRO_FILTER and ctx.pair not in OWN_MACRO_PAIRS \
+                    and htf_bias != ctx.btc_macro:
                 return
             valid_dir = htf_bias
 
@@ -221,7 +277,7 @@ class VortexScanner:
                     alert_wick_detected(setup)
                     self.cd_wick_d.set(wk)
 
-                if ENABLE_MACRO_FILTER:
+                if ENABLE_MACRO_FILTER and ctx.pair not in OWN_MACRO_PAIRS:
                     if direction == "LONG"  and ctx.btc_macro == "BEAR":
                         continue
                     if direction == "SHORT" and ctx.btc_macro == "BULL":
@@ -290,7 +346,7 @@ class VortexScanner:
                 direction = setup["direction"]
                 fk = f"{ctx.pair}_{direction}_{setup['fvg']['fvg_low']:.4f}"
 
-                if ENABLE_MACRO_FILTER:
+                if ENABLE_MACRO_FILTER and ctx.pair not in OWN_MACRO_PAIRS:
                     if direction == "LONG"  and ctx.btc_macro == "BEAR":
                         continue
                     if direction == "SHORT" and ctx.btc_macro == "BULL":
@@ -360,6 +416,10 @@ class VortexScanner:
         self.risk_mgr.sync_open_count(get_stats()["open"])
 
         for pair in CRYPTO_PAIRS:
+            if not self._is_trading_session(pair):
+                print(f"[{_ts()}] ⏸️  {pair} — di luar jam trading (weekend gap), skip")
+                continue
+
             try:
                 # Ambil harga saat ini sekali — dipakai monitor + S1
                 candles_30m   = get_candles(pair, "30m", limit=5)
