@@ -18,10 +18,8 @@ from strategy1_liquidity import (
 from strategy2_wick import scan_wick_setups
 from strategy3_fvg import scan_fvg_setups
 from strategy4_vpattern import scan_vpattern_setups, STRAT4_MIN_SCORE
-from telegram_bot import alert_touch, alert_entry, alert_result, alert_stats, alert_info
-from wick_alerts import alert_wick_entry
-from fvg_alerts import alert_fvg_entry
-from vpattern_alerts import alert_vpattern_entry
+from telegram_bot import alert_touch, alert_result, alert_stats, alert_info
+from core.signal_handler import Signal, SignalHandler
 from trade_tracker import log_signal, update_trades_for_pair, get_stats, trim_old_trades
 from risk_manager import RiskManager, TradeSetup
 
@@ -102,6 +100,7 @@ class VortexScanner:
 
         self.cd_vpattern_e = CooldownStore()
 
+        self.signal_handler  = SignalHandler()
         self.rate_mon        = SignalRateMonitor()
         self.risk_mgr        = RiskManager()
         self.last_stats_date: Optional[str] = None
@@ -264,13 +263,43 @@ class VortexScanner:
                     log.warning(f"⛔ [S1] RISK REJECTED: {ctx.pair} — {risk.reason}")
                     continue
 
-                vol = " 🔥 Volume spike!" if rejection.get("volume_spike") else ""
+                vol     = rejection.get("volume_spike", False)
+                vol_str = " 🔥 Volume spike!" if vol else ""
                 log.info(f"✅ [S1] ENTRY: {ctx.pair} {valid_dir} | "
                          f"E={trade['entry']} SL={trade['sl']} TP={trade['tp']} "
-                         f"RR={risk.rr_ratio} Size=${risk.position_usdt}{vol}")
-                alert_entry(ctx.pair, valid_dir,
-                            trade["entry"], trade["sl"], trade["tp"],
-                            trade["rr"], position_usdt=risk.position_usdt)
+                         f"RR={risk.rr_ratio} Size=${risk.position_usdt}{vol_str}")
+
+                s1_score = 6.0
+                if vol:
+                    s1_score += 1.5
+                if risk.rr_ratio >= 2.5:
+                    s1_score += 1.0
+                elif risk.rr_ratio >= 2.0:
+                    s1_score += 0.5
+
+                vol_note = " dengan volume spike" if vol else ""
+                reason   = (
+                    f"Fresh {valid_dir} liquidity zone "
+                    f"${zone['low']:.4f}–${zone['high']:.4f}. "
+                    f"False breakout 5m{vol_note} confirmed, "
+                    f"close kembali di dalam zona."
+                )
+                self.signal_handler.send_alert(Signal(
+                    strategy_id        = "S1",
+                    symbol             = ctx.pair,
+                    direction          = valid_dir,
+                    timeframe          = "30m",
+                    entry_price        = trade["entry"],
+                    sl_price           = trade["sl"],
+                    tp1_price          = trade["tp"],
+                    tp2_price          = None,
+                    rr                 = risk.rr_ratio,
+                    score              = s1_score,
+                    reason             = reason,
+                    risk_percent       = ctx.params["RISK_PCT"],
+                    position_size      = risk.position_usdt,
+                    invalidation_price = zone["low"] if valid_dir == "LONG" else zone["high"],
+                ))
                 log_signal(ctx.pair, valid_dir, trade["entry"],
                            trade["sl"], trade["tp"],
                            regime_state=ctx.btc_macro, strategy="S1",
@@ -341,7 +370,33 @@ class VortexScanner:
                 log.info(f"✅ [S2] WICK ENTRY {direction}: {ctx.pair} "
                          f"{setup['tf_label']} @ {setup['current_price']} "
                          f"Size=${risk.position_usdt}")
-                alert_wick_entry(setup, position_usdt=risk.position_usdt)
+
+                ema_note  = " dekat EMA50" if setup["ema_info"]["has_confluence"] else ""
+                wk_ratio  = setup["wick"]["wick_body_ratio"]
+                reason_s2 = (
+                    f"{setup['tf_label']} wick {wk_ratio}x body{ema_note}. "
+                    f"Price di fill zone, rejection 5m confirmed."
+                )
+                inv_s2 = (
+                    w["wick_low"]  if direction == "LONG"
+                    else w["wick_high"]
+                )
+                self.signal_handler.send_alert(Signal(
+                    strategy_id        = "S2",
+                    symbol             = ctx.pair,
+                    direction          = direction,
+                    timeframe          = setup["tf_label"],
+                    entry_price        = t["entry"],
+                    sl_price           = t["sl"],
+                    tp1_price          = t["tp1"],
+                    tp2_price          = t["tp2"],
+                    rr                 = risk.rr_ratio,
+                    score              = setup["confluence_score"] * 2.0,
+                    reason             = reason_s2,
+                    risk_percent       = ctx.params["RISK_PCT"],
+                    position_size      = risk.position_usdt,
+                    invalidation_price = inv_s2,
+                ))
                 log_signal(ctx.pair, direction, t["entry"], t["sl"], t["tp2"],
                            regime_state=ctx.btc_macro, strategy="S2",
                            position_usdt=risk.position_usdt)
@@ -414,7 +469,39 @@ class VortexScanner:
                 log.info(f"✅ [S3] FVG ENTRY: {ctx.pair} {direction} "
                          f"@ {t['entry']} | Score={setup['confluence_score']} "
                          f"RR={risk.rr_ratio} Size=${risk.position_usdt}")
-                alert_fvg_entry(setup, position_usdt=risk.position_usdt)
+
+                top_notes = [
+                    n.replace("✅ ", "")
+                    for n in setup["confluence_notes"] if n.startswith("✅")
+                ][:2]
+                sweep_ref = (setup["sweep"].get("sweep_low")
+                             or setup["sweep"].get("sweep_high"))
+                reason_s3 = (
+                    f"Liquidity sweep → "
+                    f"{'Bullish' if direction == 'LONG' else 'Bearish'} FVG "
+                    f"${setup['fvg']['fvg_low']:.4f}–${setup['fvg']['fvg_high']:.4f}. "
+                    + (" ".join(top_notes) if top_notes else "Rejection 5m confirmed.")
+                )
+                inv_s3 = (
+                    setup["fvg"]["fvg_low"]  if direction == "LONG"
+                    else setup["fvg"]["fvg_high"]
+                )
+                self.signal_handler.send_alert(Signal(
+                    strategy_id        = "S3",
+                    symbol             = ctx.pair,
+                    direction          = direction,
+                    timeframe          = setup["tf_label"],
+                    entry_price        = t["entry"],
+                    sl_price           = t["sl"],
+                    tp1_price          = t["tp1"],
+                    tp2_price          = t["tp2"],
+                    rr                 = risk.rr_ratio,
+                    score              = float(setup["confluence_score"]),
+                    reason             = reason_s3,
+                    risk_percent       = ctx.params["RISK_PCT"],
+                    position_size      = risk.position_usdt,
+                    invalidation_price = inv_s3,
+                ))
                 log_signal(ctx.pair, direction, t["entry"], t["sl"], t["tp2"],
                            confluence_score=setup["confluence_score"],
                            regime_state=ctx.btc_macro, strategy="S3",
@@ -496,7 +583,32 @@ class VortexScanner:
                 log.info(f"✅ [S4] V PATTERN ENTRY {direction}: {ctx.pair} "
                          f"{setup['tf_label']} @ {t['entry']} "
                          f"Score={setup['confidence_score']} Size=${risk.position_usdt}")
-                alert_vpattern_entry(setup, position_usdt=risk.position_usdt)
+
+                sweep_note = "Liquidity sweep + " if setup["has_sweep"] else ""
+                bias_note  = " 1D bias aligned." if setup.get("bias_aligned") else ""
+                reason_s4  = (
+                    f"{setup['pattern']} {setup['tf_label']}: {sweep_note}"
+                    f"{int(setup['reversal_pct'] * 100)}% recovery "
+                    f"dari sharp move {setup['drop_size']:.4f}.{bias_note}"
+                )
+                ref_s4 = setup.get("v_low") or setup.get("v_high", 0)
+                inv_s4 = ref_s4
+                self.signal_handler.send_alert(Signal(
+                    strategy_id        = "S4",
+                    symbol             = ctx.pair,
+                    direction          = direction,
+                    timeframe          = setup["tf_label"],
+                    entry_price        = t["entry"],
+                    sl_price           = t["sl"],
+                    tp1_price          = t["tp1"],
+                    tp2_price          = t["tp2"],
+                    rr                 = risk.rr_ratio,
+                    score              = float(setup["confidence_score"]),
+                    reason             = reason_s4,
+                    risk_percent       = ctx.params["RISK_PCT"],
+                    position_size      = risk.position_usdt,
+                    invalidation_price = inv_s4,
+                ))
                 log_signal(ctx.pair, direction, t["entry"], t["sl"], t["tp2"],
                            confluence_score=int(setup["confidence_score"]),
                            regime_state=ctx.btc_macro, strategy="S4",
