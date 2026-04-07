@@ -19,12 +19,12 @@ tail -f /tmp/scanner.log
 
 ## File Structure
 - `config.py` — kredensial & parameter (di-.gitignore, JANGAN push)
-- `scanner.py` — main loop + VortexScanner class (warmup, session filter, 3 strategi)
+- `scanner.py` — main loop + VortexScanner class (warmup, session filter, 4 strategi)
 - `strategy1_liquidity.py` — S1 logic + shared utilities (candles, ATR, zones, rejection check)
 - `strategy2_wick.py` — S2 Wick Fill (1W/1D/4H, LONG & SHORT)
 - `strategy3_fvg.py` — S3 FVG Reclaim after Liquidity Sweep
 - `risk_manager.py` — RiskManager: position sizing + 4 gate (RR, ATR SL, max open, daily risk)
-- `telegram_bot.py` / `wick_alerts.py` / `fvg_alerts.py` — alert per strategi
+- `telegram_bot.py` / `wick_alerts.py` / `fvg_alerts.py` / `vpattern_alerts.py` — alert per strategi
 - `trade_tracker.py` — catat signal, monitor TP/SL, hitung winrate per strategi
 - `trades.json` — hasil tracking (auto-generated saat runtime)
 
@@ -46,28 +46,33 @@ XAUUSDT (gold — session filter + own macro)
 5. **Winrate tracking**: setiap signal dicatat di trades.json, monitor TP/SL hit otomatis, report ke Telegram setiap 60 scan (~1 jam)
 
 ## Alert Telegram
-- ⚠️ TOUCH — harga menyentuh zona
-- ✅ ENTRY SIGNAL — rejection confirmed
+- ⚠️ TOUCH — harga menyentuh zona liquidity (S1)
+- ✅ ENTRY SIGNAL — rejection confirmed (S1/S2/S3/S4)
 - ✅ WIN / ❌ LOSS — hasil trade otomatis
-- 📊 WINRATE — laporan tiap ~1 jam
+- 📊 WINRATE — laporan harian
+
+> **Catatan**: Alert "DETECTED" (wick/FVG/VPattern ditemukan) dinonaktifkan — tidak actionable
+> sebelum harga masuk zona. Hanya ENTRY alert yang dikirim ke Telegram.
 
 ## Bug yang Sudah Difix
 1. `is_touching_zone` — price harus dalam [low-buffer, high+buffer], bukan satu sisi
 2. `is_mitigated` — zona yang sudah dikunjungi ulang setelah terbentuk dibuang
 3. SL placement — pakai zone boundary, bukan prev liquidity (dulu bisa 7%+ jauh)
 4. Daily risk calc, pair-specific touch threshold, S2 SHORT wick detection
-5. Startup alert blast — `_warmup()` pre-seed `cd_wick_d` & `cd_fvg_d` saat launch
-6. Cooldown expiry blast — `cd_wick_d`/`cd_fvg_d` diganti permanent `_seen_wick`/`_seen_fvg` set (alert DETECTED hanya fire sekali per wick candle unik, tidak blast ulang tiap 4 jam)
+5. Startup alert blast — `_warmup()` pre-seed `_seen_wick`/`_seen_fvg`/`_seen_vpattern` saat launch
+6. Cooldown expiry blast — diganti permanent seen set (tidak blast ulang tiap 4 jam)
+7. Telegram spam — alert DETECTED (wick/FVG/VPattern) dinonaktifkan; scanner tetap log ke file tapi tidak kirim ke Telegram. Hanya ENTRY yang actionable.
 
 ## Git / Push
+PAT disimpan di `config.py` (GITHUB_PAT) — tidak perlu paste manual.
 ```bash
 git add <files>   # jangan add config.py
 git commit -m "..."
-git remote set-url origin https://jajajak12:<PAT>@github.com/jajajak12/Vortex.git
+source <(python3 -c "import config; print(f'PAT={config.GITHUB_PAT}')")
+git remote set-url origin https://jajajak12:${PAT}@github.com/jajajak12/Vortex.git
 git push origin main
-git remote set-url origin https://github.com/jajajak12/Vortex.git  # reset token setelah push
+git remote set-url origin https://github.com/jajajak12/Vortex.git
 ```
-PAT: tanya user (classic token dengan scope repo).
 
 ## XAUUSDT — Catatan Penting
 - `OWN_MACRO_PAIRS` — pakai htf_bias EMA50 4H gold sendiri, bukan BTC EMA200 1W

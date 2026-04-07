@@ -19,9 +19,9 @@ from strategy2_wick import scan_wick_setups
 from strategy3_fvg import scan_fvg_setups
 from strategy4_vpattern import scan_vpattern_setups, STRAT4_MIN_SCORE
 from telegram_bot import alert_touch, alert_entry, alert_result, alert_stats, alert_info
-from wick_alerts import alert_wick_detected, alert_wick_entry
-from fvg_alerts import alert_fvg_detected, alert_fvg_entry
-from vpattern_alerts import alert_vpattern_detected, alert_vpattern_entry
+from wick_alerts import alert_wick_entry
+from fvg_alerts import alert_fvg_entry
+from vpattern_alerts import alert_vpattern_entry
 from trade_tracker import log_signal, update_trades_for_pair, get_stats, trim_old_trades
 from risk_manager import RiskManager, TradeSetup
 
@@ -295,7 +295,6 @@ class VortexScanner:
                 if wk not in self._seen_wick:
                     log.info(f"🕯️  [S2] WICK {direction}: {ctx.pair} "
                              f"{setup['tf_label']} | Ref={ref} | {setup['confluence_label']}")
-                    alert_wick_detected(setup)
                     self._seen_wick.add(wk)
 
                 if ENABLE_MACRO_FILTER and ctx.pair not in OWN_MACRO_PAIRS:
@@ -376,7 +375,6 @@ class VortexScanner:
                     log.info(f"🔷 [S3] FVG: {ctx.pair} {setup['tf_label']} "
                              f"{direction} | Zone {setup['fvg']['fvg_low']}-"
                              f"{setup['fvg']['fvg_high']} | Score={setup['confluence_score']}")
-                    alert_fvg_detected(setup)
                     self._seen_fvg.add(fk)
 
                 if not setup["in_fvg_zone"]:
@@ -450,7 +448,6 @@ class VortexScanner:
                     log.info(f"📐 [S4] V PATTERN {setup['pattern']}: {ctx.pair} "
                              f"{setup['tf_label']} | Score={setup['confidence_score']} "
                              f"| {setup['confidence_label']}")
-                    alert_vpattern_detected(setup)
                     self._seen_vpattern.add(vk)
 
                 if not setup["in_entry_zone"]:
