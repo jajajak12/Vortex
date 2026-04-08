@@ -38,7 +38,7 @@ VPATTERN_V_AGE_MAX     = 18     # V point harus dalam 18 candle terakhir
 VPATTERN_SL_BUFFER     = 0.005  # 0.5% buffer SL di luar titik V
 
 # Min score untuk kirim alert (scanner memakai ini)
-STRAT4_MIN_SCORE = 5.5
+STRAT4_MIN_SCORE = 7.8
 
 TF_LABEL    = {"4h": "4H", "1d": "1D"}
 TF_PRIORITY = {"4h": "🟡 MEDIUM", "1d": "🔴 HIGH"}
@@ -81,47 +81,63 @@ def _score(
     has_sweep: bool, tf: str,
     bias_aligned: bool = False,
 ) -> tuple[float, list[str]]:
-    """Hitung confidence score (1-10) dan notes."""
-    score = 4.0
+    """
+    Hitung confidence score S4 (1–10) — bobot lebih tinggi untuk:
+      recovery strength, wick rejection, HTF alignment, liquidity sweep.
+    Base lebih rendah (3.0) → harus buktikan semua faktor untuk lolos 7.8.
+    """
+    score = 4.5
     notes = []
 
-    atr_mult = move_size / atr if atr > 0 else 0
-    if atr_mult >= VPATTERN_ATR_STRONG:
-        score += 1.0
-        notes.append(f"✅ Sharp move kuat: {atr_mult:.1f}x ATR")
-    else:
-        notes.append(f"⬜ Sharp move moderate: {atr_mult:.1f}x ATR")
-
+    # ── 1. Recovery strength (bobot terbesar: max +3.0) ──
     if reversal_pct >= 0.90:
+        score += 3.0
+        notes.append(f"✅ Recovery sangat kuat: {int(reversal_pct*100)}%  (+3.0)")
+    elif reversal_pct >= VPATTERN_RECOV_STRONG:   # >= 0.75
         score += 2.0
-        notes.append(f"✅ Reversal sangat kuat: {int(reversal_pct*100)}%")
-    elif reversal_pct >= VPATTERN_RECOV_STRONG:
-        score += 1.0
-        notes.append(f"✅ Reversal kuat: {int(reversal_pct*100)}%")
+        notes.append(f"✅ Recovery kuat: {int(reversal_pct*100)}%  (+2.0)")
     else:
-        notes.append(f"⬜ Reversal cukup: {int(reversal_pct*100)}%")
+        score += 0.5
+        notes.append(f"⬜ Recovery lemah: {int(reversal_pct*100)}%  (+0.5)")
 
-    if has_rejection:
+    # ── 2. Sharp move magnitude (max +1.5) ──
+    atr_mult = move_size / atr if atr > 0 else 0
+    if atr_mult >= 3.0:
+        score += 1.5
+        notes.append(f"✅ Sharp move sangat kuat: {atr_mult:.1f}x ATR  (+1.5)")
+    elif atr_mult >= VPATTERN_ATR_STRONG:          # >= 2.5
         score += 1.0
-        notes.append(f"✅ Rejection candle (wick {int(wick_ratio*100)}% range)")
+        notes.append(f"✅ Sharp move kuat: {atr_mult:.1f}x ATR  (+1.0)")
     else:
-        notes.append(f"⬜ Tidak ada rejection signifikan")
+        score += 0.5
+        notes.append(f"⬜ Sharp move cukup: {atr_mult:.1f}x ATR  (+0.5)")
 
+    # ── 3. Wick rejection (bobot tinggi: max +1.5) ──
+    if has_rejection and wick_ratio >= 0.50:
+        score += 1.5
+        notes.append(f"✅ Wick rejection kuat: {int(wick_ratio*100)}% range  (+1.5)")
+    elif has_rejection:
+        score += 1.0
+        notes.append(f"✅ Rejection candle: {int(wick_ratio*100)}% range  (+1.0)")
+    else:
+        notes.append("⛔ Tidak ada rejection candle  (+0)")
+
+    # ── 4. Liquidity sweep (max +1.5) ──
     if has_sweep:
         score += 1.5
-        notes.append("✅ Liquidity sweep sebelum reversal")
+        notes.append("✅ Liquidity sweep sebelum reversal  (+1.5)")
     else:
-        notes.append("⬜ Tidak ada sweep yang jelas")
+        notes.append("⬜ Tidak ada sweep yang jelas  (+0)")
 
-    if tf == "1d":
-        score += 0.5
-        notes.append("✅ Daily TF (+0.5 confidence)")
-
+    # ── 5. HTF alignment (max +1.5) ──
     if bias_aligned:
-        score += 1.0
-        notes.append("✅ 1D EMA50 searah V pattern")
-    elif tf == "4h":
-        notes.append("⬜ 1D bias tidak konfirmasi")
+        score += 1.5
+        notes.append("✅ 1D EMA50 konfirmasi searah  (+1.5)")
+    elif tf == "1d":
+        score += 0.5
+        notes.append("✅ Daily TF setup  (+0.5)")
+    else:
+        notes.append("⛔ HTF bias tidak konfirmasi  (+0)")
 
     return round(min(score, 10.0), 1), notes
 
@@ -170,6 +186,10 @@ def _scan_v_bottom(candles: list[dict], atr: float, tf: str,
         if reversal_pct < VPATTERN_RECOV_MIN:
             continue
 
+        # ── Early filter: recovery < 75% → langsung reject (V lemah, high risk) ──
+        if reversal_pct < VPATTERN_RECOV_STRONG:
+            continue
+
         # ── Rejection candle di titik V ──
         has_rejection, wick_ratio = _rejection_wick(candles[v_idx])
 
@@ -187,9 +207,10 @@ def _scan_v_bottom(candles: list[dict], atr: float, tf: str,
             bias_aligned=bias_aligned,
         )
 
-        # ── Entry zone: harga belum melampaui 80% recovery ──
+        # ── Entry zone: HARUS di bawah 50% recovery — V-bottom valid only near the low ──
+        # Late entry (price sudah 80%+ recovered) = bukan V-bottom, sudah terlambat
         current_price = candles[-1]["close"]
-        in_entry_zone = v_low < current_price <= (v_low + recovery * 0.80)
+        in_entry_zone = v_low < current_price <= (v_low + recovery * 0.50)
 
         # ── Trade calculation ──
         sl      = v_low * (1 - VPATTERN_SL_BUFFER)
@@ -286,6 +307,10 @@ def _scan_v_top(candles: list[dict], atr: float, tf: str,
         if reversal_pct < VPATTERN_RECOV_MIN:
             continue
 
+        # ── Early filter: recovery < 75% → langsung reject (V lemah, high risk) ──
+        if reversal_pct < VPATTERN_RECOV_STRONG:
+            continue
+
         # ── Rejection candle di titik V ──
         has_rejection, wick_ratio = _rejection_wick(candles[v_idx])
 
@@ -303,9 +328,10 @@ def _scan_v_top(candles: list[dict], atr: float, tf: str,
             bias_aligned=bias_aligned,
         )
 
-        # ── Entry zone: harga belum drop lebih dari 80% ──
+        # ── Entry zone: HARUS di atas 50% drop (BELOW mid-point) — V-top valid only near the high ──
+        # Late entry (price sudah drop 80%+) = bukan V-top reversal
         current_price = candles[-1]["close"]
-        in_entry_zone = (v_high - drop_size * 0.80) <= current_price < v_high
+        in_entry_zone = (v_high - drop_size * 0.50) <= current_price < v_high
 
         # ── Trade calculation ──
         sl      = v_high * (1 + VPATTERN_SL_BUFFER)

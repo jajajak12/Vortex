@@ -542,10 +542,14 @@ class VortexScanner:
                 if self.cd_vpattern_e.is_on_cooldown(vk):
                     continue
 
-                # Entry confirmation — 30m (sesuai MTF: entry timing di 30m)
-                # v_zone: zona sempit berbasis ATR di sekitar titik V (support/resistance level).
-                # check_rejection_long/short mencari candle yang spike keluar zona lalu close kembali.
-                candles_30m = get_candles(ctx.pair, "30m", limit=50)
+                # HARD GATE: V-pattern tanpa rejection candle di V-point = bukan valid V
+                # V-bottom/V-top yang sah HARUS punya long wick rejection di titik reversal
+                if not setup["has_rejection"]:
+                    continue
+
+                # Entry confirmation — 5m (lebih responsive dari 30m)
+                # v_zone: zona sempit berbasis ATR di sekitar titik V
+                candles_5m = get_candles(ctx.pair, "5m", limit=50)
                 req_vol     = ctx.params["REQUIRE_VOLUME_SPIKE"]
                 atr         = setup.get("atr", ref * 0.01)  # fallback 1% jika atr tidak ada
 
@@ -554,14 +558,14 @@ class VortexScanner:
                     v_zone    = {"low":   ref - atr * 0.15,
                                  "high":  ref + atr * 0.25,
                                  "pivot": ref}
-                    rejection = check_rejection_long(candles_30m, v_zone,
+                    rejection = check_rejection_long(candles_5m, v_zone,
                                                      vol_spike_required=req_vol)
                 else:
                     # Zone: tight band di sekitar V high — konfirmasi rejection dari resistance
                     v_zone    = {"low":   ref - atr * 0.25,
                                  "high":  ref + atr * 0.15,
                                  "pivot": ref}
-                    rejection = check_rejection_short(candles_30m, v_zone,
+                    rejection = check_rejection_short(candles_5m, v_zone,
                                                       vol_spike_required=req_vol)
 
                 if not (rejection and rejection["confirmed"]):
