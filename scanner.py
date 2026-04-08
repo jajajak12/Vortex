@@ -303,7 +303,8 @@ class VortexScanner:
                 log_signal(ctx.pair, valid_dir, trade["entry"],
                            trade["sl"], trade["tp"],
                            regime_state=ctx.btc_macro, strategy="S1",
-                           position_usdt=risk.position_usdt)
+                           position_usdt=risk.position_usdt,
+                           rr=risk.rr_ratio)
                 self.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
                 self.rate_mon.track(ctx.pair)
                 self.cd_entry.set(ckey)
@@ -399,7 +400,8 @@ class VortexScanner:
                 ))
                 log_signal(ctx.pair, direction, t["entry"], t["sl"], t["tp2"],
                            regime_state=ctx.btc_macro, strategy="S2",
-                           position_usdt=risk.position_usdt)
+                           position_usdt=risk.position_usdt,
+                           rr=risk.rr_ratio)
                 self.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
                 self.rate_mon.track(ctx.pair)
                 self.cd_wick_e.set(wk)
@@ -505,7 +507,8 @@ class VortexScanner:
                 log_signal(ctx.pair, direction, t["entry"], t["sl"], t["tp2"],
                            confluence_score=setup["confluence_score"],
                            regime_state=ctx.btc_macro, strategy="S3",
-                           position_usdt=risk.position_usdt)
+                           position_usdt=risk.position_usdt,
+                           rr=risk.rr_ratio)
                 self.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
                 self.rate_mon.track(ctx.pair)
                 self.cd_fvg_e.set(fk)
@@ -616,7 +619,8 @@ class VortexScanner:
                 log_signal(ctx.pair, direction, t["entry"], t["sl"], t["tp2"],
                            confluence_score=int(setup["confidence_score"]),
                            regime_state=ctx.btc_macro, strategy="S4",
-                           position_usdt=risk.position_usdt)
+                           position_usdt=risk.position_usdt,
+                           rr=risk.rr_ratio)
                 self.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
                 self.rate_mon.track(ctx.pair)
                 self.cd_vpattern_e.set(vk)

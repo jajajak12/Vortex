@@ -34,7 +34,8 @@ def _save(trades: list):
 
 def log_signal(pair: str, direction: str, entry: float, sl: float, tp: float,
                confluence_score: int = 0, regime_state: str = "UNKNOWN",
-               strategy: str = "S1", position_usdt: float = 0.0) -> dict:
+               strategy: str = "S1", position_usdt: float = 0.0,
+               rr: float = 0.0) -> dict:
     """Catat signal entry baru dengan status OPEN."""
     trades = _load()
     trade = {
@@ -54,6 +55,7 @@ def log_signal(pair: str, direction: str, entry: float, sl: float, tp: float,
         "confluence_score":   confluence_score,
         "regime_state":       regime_state,
         "position_usdt":      position_usdt,
+        "rr":                 rr,
         "candles_to_resolve": None,  # diisi saat close
     }
     trades.append(trade)

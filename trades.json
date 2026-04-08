@@ -1,0 +1,34 @@
+[
+  {
+    "id": 1775145948361,
+    "time": "2026-04-02 18:05:48",
+    "pair": "ETHUSDT",
+    "direction": "SHORT",
+    "entry": 2056.46,
+    "sl": 2203.418,
+    "tp": 1909.502,
+    "status": "CLOSED",
+    "result": "LOSS",
+    "close_price": 2214.12,
+    "close_time": "2026-04-08 00:59:29",
+    "candles_to_resolve": 1522
+  },
+  {
+    "id": 1775604636077,
+    "time": "2026-04-08 01:30:36",
+    "pair": "SOLUSDT",
+    "direction": "LONG",
+    "entry": 86.83,
+    "sl": 84.6844,
+    "tp": 110.25,
+    "status": "CLOSED",
+    "result": "LOSS",
+    "close_price": 84.63,
+    "close_time": "2026-04-08 02:34:34",
+    "strategy": "S4",
+    "confluence_score": 5,
+    "regime_state": "BULL",
+    "position_usdt": 4046.89,
+    "candles_to_resolve": 12
+  }
+]
