@@ -1039,22 +1039,25 @@ class VortexScanner:
         log.info("=" * 50)
         log.info(f"🤖 VORTEX — 6 Strategies | {len(CRYPTO_PAIRS)} pairs")
         log.info(f"⏱️  Interval: {SCAN_INTERVAL_SECONDS}s")
+        log.info(f"[1H AGGRESSIVE MODE] EXPERIMENT ACTIVE — TF_EXPERIMENT_MODE = 1H_AGGRESSIVE")
+        log.info(f"    Detect/Confirm: 1H | Entry: 15m | Thresholds loosened for 2-week trial")
         log.info("=" * 50)
 
         alert_info(
-            f"🤖 Vortex aktif — 6 strategi\n"
-            f"S1: Liquidity Grab\n"
+            f"🤖 Vortex AKTIF — 1H_AGGRESSIVE MODE (eksperimen 2 minggu)\n"
+            f"S1: Liquidity Grab + Chart Patterns\n"
             f"S2: Wick Fill\n"
             f"S3: FVG + Imbalance\n"
             f"S4: Order Block + Breaker Block\n"
             f"S5: Engineered Liquidity\n"
             f"S6: BOS + MSS / CHOCH\n"
+            f"TF: Detect/Confirm=1H | Entry=15m\n"
             f"Pairs: {len(CRYPTO_PAIRS)} | Interval: {SCAN_INTERVAL_SECONDS}s"
         )
 
         while True:
             scan_start = time.time()
-            log.info(f"Scanning {len(CRYPTO_PAIRS)} pairs...")
+            log.info("[1H AGGRESSIVE MODE] Scanning...")
 
             # Fix 5: cache macro — EMA200 1W berubah sangat lambat
             try:

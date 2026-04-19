@@ -48,7 +48,7 @@ S3_TF_ENTRY   = "30m"
 # FVG — UPGRADED for more entries
 FVG_LOOKBACK   = 6        # UPGRADED: tighter window (was 8)
 FVG_TOUCH_LOOK = 20
-FVG_MIN_ATR    = 0.25    # UPGRADED: lower (was 0.30)
+FVG_MIN_ATR    = 0.25    # EXPERIMENT 1H_AGGRESSIVE: lowered from 0.30 (was 0.30 → now 0.25)
 
 # Imbalance — UPGRADED
 IMBALANCE_MIN_ATR  = 0.40   # UPGRADED: lower (was 0.50)

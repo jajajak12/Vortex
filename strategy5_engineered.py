@@ -45,8 +45,9 @@ S5_TF_ENTRY   = "30m"
 COMP_MAX_ATR    = 0.50   # Compression max width
 COMP_TIGHT_ATR  = 0.30   # Tight compression bonus threshold
 SWEEP_LOOKBACK  = 10
-DISP_BODY_MIN   = 0.55
+DISP_BODY_MIN   = 0.50   # EXPERIMENT 1H_AGGRESSIVE: lowered from 0.55
 DISP_VOL_MIN    = 1.5
+RECOVERY_MIN    = 0.60   # EXPERIMENT: reclaim must retrace 60% of sweep distance (was implicit 100%)
 
 S5_BASE_SCORE   = 5.0
 S5_MIN_SCORE    = 7.5
@@ -140,10 +141,14 @@ def _detect_sweep_reclaim(candles_4h: list[dict], atr: float) -> list[dict]:
         body1 = abs(c1["close"] - c1["open"]) / rng1
 
         # Bullish sweep then reclaim
+        sweep_dist = c0["low"] - c1["low"]
+        reclaim_dist = c2["close"] - c0["low"]
         if (c1["low"]  < c0["low"]  and   # sweep below range
             c2["close"] > c0["low"] and   # reclaim above
             c2["volume"] >= avg_v * DISP_VOL_MIN and
-            body1 >= DISP_BODY_MIN):
+            body1 >= DISP_BODY_MIN and
+            sweep_dist >= atr * 1.5 and          # sweep >= 1.5x ATR
+            reclaim_dist / sweep_dist >= RECOVERY_MIN):  # reclaim >= 60% of sweep
 
             results.append({
                 "type":        "EngineeredSweep",
@@ -161,10 +166,14 @@ def _detect_sweep_reclaim(candles_4h: list[dict], atr: float) -> list[dict]:
             })
 
         # Bearish sweep then reclaim
+        sweep_dist = c1["high"] - c0["high"]
+        reclaim_dist = c0["high"] - c2["close"]
         if (c1["high"] > c0["high"] and   # sweep above range
             c2["close"] < c0["high"] and   # reclaim below
             c2["volume"] >= avg_v * DISP_VOL_MIN and
-            body1 >= DISP_BODY_MIN):
+            body1 >= DISP_BODY_MIN and
+            sweep_dist >= atr * 1.5 and          # sweep >= 1.5x ATR
+            reclaim_dist / sweep_dist >= RECOVERY_MIN):  # reclaim >= 60% of sweep
 
             results.append({
                 "type":        "EngineeredSweep",

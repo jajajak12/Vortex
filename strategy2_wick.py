@@ -4,8 +4,8 @@ from vortex_logger import get_logger
 log = get_logger(__name__)
 
 # ── Parameter Strategy 2 ─────────────────────────────────────
-WICK_MIN_BODY_RATIO   = 1.5    # Wick minimal 1.5x body size
-WICK_MIN_RANGE_RATIO  = 0.30   # Atau minimal 30% dari total candle range
+WICK_MIN_BODY_RATIO   = 1.25   # EXPERIMENT 1H_AGGRESSIVE: lowered from 1.5
+WICK_MIN_RANGE_RATIO  = 0.25   # EXPERIMENT: lowered from 0.30
 SL_BUFFER_PCT         = 0.008  # SL 0.8% di bawah wick low
 EMA_PERIOD            = 50     # 1W 50 EMA untuk confluence
 EMA_CONFLUENCE_PCT    = 0.02   # Wick dianggap dekat EMA jika dalam 2%

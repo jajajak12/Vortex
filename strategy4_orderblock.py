@@ -81,7 +81,7 @@ def _is_impulse(candle: dict, avg_vol: float, mult: float = 1.5) -> bool:
     if total == 0:
         return False
     body = abs(candle["close"] - candle["open"])
-    return candle["volume"] >= avg_vol * mult and (body / total) >= 0.6
+    return candle["volume"] >= avg_vol * mult and (body / total) >= 0.55  # EXPERIMENT 1H_AGGRESSIVE: was 0.60
 
 
 def _is_in_zone(price: float, zone_low: float, zone_high: float,
