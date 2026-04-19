@@ -229,7 +229,8 @@ def analyze_by_pair(trades: list[dict]) -> dict:
 def build_analysis_text(trades: list[dict], strat_stats: dict,
                        pair_stats: dict, overall_wr: float,
                        avg_rr_v: float, fsr: float,
-                       dd: float, dd_p: str, dd_t: str) -> str:
+                       dd: float, dd_p: str, dd_t: str,
+                       current_weights: dict | None = None) -> str:
 
     lines = [
         f"## VORTEX TRADING PERFORMANCE SUMMARY (as of {date.today().isoformat()})",
@@ -238,32 +239,77 @@ def build_analysis_text(trades: list[dict], strat_stats: dict,
         f"- Total Trades: {len(trades)}",
         f"- Winrate: {overall_wr:.1f}%",
         f"- Average RR: {avg_rr_v:.2f}",
-        f"- False Signal Rate: {fsr:.1}% (losses within 5 candles of entry)",
+        f"- False Signal Rate: {fsr:.1f}% (losses within 5 candles of entry)",
         f"- Max Drawdown: {dd:.1f}% ({dd_p} to {dd_t})",
         f"- TF Experiment Mode: {TF_EXPERIMENT_MODE}",
-        f"- Breakeven Winrate (RR≥2): ~33%",
+        f"- Breakeven Winrate (RR>=2): ~33%",
+        f"  Target winrate for success: 40-50%",
+        f"  Fail threshold: <40%",
         f"",
-        f"### Per-Strategy Breakdown",
     ]
+
+    # Current strategy weights
+    if current_weights:
+        lines.append(f"### Current Darwinian Weights (score_final = base_score x weight)")
+        for s, w in sorted(current_weights.items()):
+            lines.append(f"  {s}: {w:.3f}")
+        lines.append("")
+
+    lines.append(f"### Per-Strategy Breakdown")
     for s, d in sorted(strat_stats.items()):
+        inconclusive = " [INCONCLUSIVE - < 5 trades]" if d["total"] < 5 else ""
         lines.append(
-            f"- {s}: {d['total']} trades | {d['winrate']}% WR | "
+            f"- {s}: {d['total']} trades{inconclusive} | {d['winrate']}% WR | "
             f"avg RR={d['avg_rr']} | false_rate={d['false_rate']}%"
         )
         if d["losses_detail"]:
             lines.append(f"  Recent losses: {d['losses_detail'][-3:]}")
     lines.append("")
+
+    # RR distribution
+    closed = [t for t in trades if t.get("status") == "CLOSED"]
+    if closed:
+        rr_vals = [t.get("rr", 0) for t in closed if t.get("rr") is not None]
+        if rr_vals:
+            bucket_labels = ["<1.0", "1.0-2.0", "2.0-3.0", ">=3.0"]
+            buckets = [0, 0, 0, 0]
+            for r in rr_vals:
+                if r < 1.0:   buckets[0] += 1
+                elif r < 2.0: buckets[1] += 1
+                elif r < 3.0: buckets[2] += 1
+                else:         buckets[3] += 1
+            total_r = len(rr_vals)
+            lines.append(f"### RR Distribution ({total_r} closed trades with RR data)")
+            for label, count in zip(bucket_labels, buckets):
+                pct = count / total_r * 100 if total_r else 0
+                lines.append(f"  {label}: {count} trades ({pct:.0f}%)")
+            lines.append("")
+
     lines.append(f"### Per-Pair Breakdown")
     for p, d in sorted(pair_stats.items()):
         lines.append(f"- {p}: {d['total']} trades | {d['winrate']}% WR | avg RR={d['avg_rr']}")
     lines.append("")
+
+    # Candle resolution: how fast did trades resolve?
+    if closed:
+        cdl_vals = [t.get("candles_to_resolve", 0) for t in closed if t.get("candles_to_resolve") is not None]
+        if cdl_vals:
+            fast = sum(1 for c in cdl_vals if c <= 5)
+            slow = sum(1 for c in cdl_vals if c > 20)
+            avg_c = sum(cdl_vals) / len(cdl_vals) if cdl_vals else 0
+            lines.append(f"### Candle Resolution (closed trades)")
+            lines.append(f"  Fast resolve (<=5 candles): {fast} trades ({fast/len(cdl_vals)*100:.0f}%)")
+            lines.append(f"  Slow resolve (>20 candles): {slow} trades ({slow/len(cdl_vals)*100:.0f}%)")
+            lines.append(f"  Average candles to resolve: {avg_c:.1f}")
+            lines.append("")
+
     lines.append(f"### Recent Trades (last 10)")
     for t in trades[-10:]:
         lines.append(
             f"- {t.get('time','')} | {t.get('symbol',t.get('pair','?'))} | "
             f"{t.get('direction','?')} | {t.get('strategy','?')} | "
             f"Entry={t.get('entry')} SL={t.get('sl')} TP={t.get('tp')} | "
-            f"{t.get('result')} | RR={t.get('rr')} | candles_to_SL={t.get('candles_to_resolve')}"
+            f"{t.get('result')} | RR={t.get('rr')} | candles={t.get('candles_to_resolve')}"
         )
     return "\n".join(lines)
 
@@ -295,36 +341,45 @@ def generate_llm_improvement(analysis_text: str, total_trades: int) -> dict:
         }
 
     is_observasi = total_trades < 30
-    mode_prompt = (
-        "OBSERVASI MODE (data < 30 trades): "
-        "Only provide qualitative observations and patterns you notice. "
-        "Do NOT recommend any rule changes. "
-        "Focus on: what patterns are emerging, which setups look promising, "
-        "what data points are too early to conclude."
-        if is_observasi else
-        "IMPROVEMENT MODE (data >= 30 trades): "
-        "Provide max 3 specific, data-driven improvement recommendations. "
-        "For each: cite the specific data that supports it. "
-        "Also extract any LEARNABLE LESSONS (PREFER/AVOID patterns) "
-        "that can be injected into future strategy decisions."
-    )
 
-    system_prompt = (
-        "You are Vortex Senior Quant Engineer. "
-        "You analyze crypto trading agent performance data. "
-        "You are data-driven, cautious, and precise. "
-        "You NEVER over-optimize. You focus on stability and risk management. "
-        "Your output must be in valid JSON with keys: "
-        "insights (list), recommendations (list, max 3), lessons (list of {type, description, data_evidence})."
-    )
+    system_prompt = """You are Vortex Senior Quant Engineer specializing in crypto trading strategy analysis.
 
-    user_prompt = (
-        f"{mode_prompt}\n\n"
-        f"MODE: {'OBSERVASI' if is_observasi else 'IMPROVEMENT'}\n\n"
-        f"ANALYSIS DATA:\n{analysis_text}\n\n"
-        f"Respond ONLY with valid JSON in this exact format:\n"
-        f'{{"insights": ["..."], "recommendations": ["..."], "lessons": [{{"type": "PREFER|AVOID|DIRECTIONAL", "description": "...", "data_evidence": "..."}}]}}'
-    )
+RULES you MUST follow:
+1. You ONLY cite numbers that appear in the data. Never invent statistics.
+2. If sample size is too small (< 30 trades), say so explicitly and what patterns ARE emerging.
+3. Max 3 recommendations. Each recommendation MUST cite a specific number from the data.
+4. Extract lessons: PREFER (something that correlates with wins), AVOID (something that correlates with losses), DIRECTIONAL (macro context note).
+5. If a strategy has 0% or 100% winrate on < 5 trades, label it INCONCLUSIVE — do not draw conclusions.
+6. You are data-driven and cautious. You never over-optimize. You prioritize risk management.
+
+OUTPUT FORMAT — respond ONLY with valid JSON:
+{"insights": ["... cite numbers ...", "..."], "recommendations": ["[ACTION-1] Specific change: because X% of losses came from this pattern", "[ACTION-2] ...", "[ACTION-3] ..."], "lessons": [{"type": "PREFER|AVOID|DIRECTIONAL", "description": "...", "data_evidence": "..."}]}"""
+
+    if is_observasi:
+        mode_instruction = f"""OBSERVASI MODE — {total_trades} trades collected (need 30 for recommendations).
+Give qualitative observations only. Focus on:
+1. Which strategy/pair COMBINATIONS are showing early promise (even if not yet statistically significant)
+2. Any emerging patterns in FALSE SIGNALS ( setups that look good but fail quickly)
+3. Risk management observations (avg loss size, max drawdown trend)
+4. What the data CANNOT tell us yet due to sample size
+
+Do NOT make any rule change recommendations. Simply observe and note what to watch."""
+    else:
+        mode_instruction = f"""IMPROVEMENT MODE — {total_trades} trades collected.
+Analyze the data rigorously. Provide max 3 actionable recommendations.
+Each recommendation must include:
+- The specific number from the data that supports it (e.g. "S4 has 0% winrate over 6 trades, all losses occurred within 10 candles")
+- The proposed change (e.g. "Raise S4 min score gate from 8.0 to 9.5")
+- Expected outcome (e.g. "Would reduce false signals by filtering weaker setups")
+
+Also extract any learnable patterns (PREFER/AVOID/DIRECTIONAL)."""
+
+    user_prompt = f"""{mode_instruction}
+
+RAW TRADE DATA:
+{analysis_text}
+
+Respond ONLY with the JSON format specified in the system prompt."""
 
     headers = {
         "Authorization": f"Bearer {MINIMAX_API_KEY}",
@@ -675,7 +730,8 @@ def run():
     # 4. Build analysis text
     analysis_text = build_analysis_text(
         trades, strat_stats, pair_stats,
-        overall_wr, avg_rr_v, fsr, dd, dd_p, dd_t
+        overall_wr, avg_rr_v, fsr, dd, dd_p, dd_t,
+        current_weights=current_weights,
     )
 
     # 5. LLM analysis
