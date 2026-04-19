@@ -283,9 +283,9 @@ def scan_order_blocks(
         touched = _was_touched(c4, lo, hi, ob["ob_idx"])
         in_zone = _is_in_zone(price, lo, hi)
 
-        # S1 overlap
+        # S1 overlap — ≤2% zone proximity (tightened from 3%)
         has_s1 = any(
-            abs((z["low"]+z["high"])/2 - mid)/mid < 0.03 and z["type"] == d
+            abs((z["low"]+z["high"])/2 - mid)/mid < 0.02 and z["type"] == d
             for z in (s1_zones.get("LONG",[]) + s1_zones.get("SHORT",[]))
         )
 

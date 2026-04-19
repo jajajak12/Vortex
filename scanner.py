@@ -638,6 +638,14 @@ class VortexScanner:
                 if self.cd_ob_e.is_on_cooldown(setup["zone_key"]):
                     continue
 
+                # MANDATORY wick rejection at 30m
+                wick_rej = self._get_wick_rejection(
+                    ctx.pair, setup["direction"],
+                    setup["ob"]["ob_mid"], setup.get("ob", {})
+                )
+                if not wick_rej:
+                    continue
+
                 t    = setup["trade"]
                 risk = self.risk_mgr.evaluate(TradeSetup(
                     pair=ctx.pair, direction=direction,
@@ -790,6 +798,14 @@ class VortexScanner:
                 if self.cd_bos_e.is_on_cooldown(setup["zone_key"]):
                     continue
 
+                # MANDATORY wick rejection at 30m
+                zone_mid = setup["zone"]["zone_mid"]
+                wick_rej = self._get_wick_rejection(
+                    ctx.pair, setup["direction"], zone_mid, setup.get("zone", {})
+                )
+                if not wick_rej:
+                    continue
+
                 t    = setup["trade"]
                 risk = self.risk_mgr.evaluate(TradeSetup(
                     pair=ctx.pair, direction=direction,
@@ -807,7 +823,8 @@ class VortexScanner:
                          f"@ {t['entry']} | Score={setup['confidence_score']} "
                          f"RR={risk.rr_ratio} Size=${risk.position_usdt} "
                          f"{'[MSS]' if setup.get('mss') else ''}"
-                         f"{'[CHOCH]' if setup.get('choch') else ''}")
+                         f"{'[CHOCH]' if setup.get('choch') else ''}"
+                         f"{'[WICK OK]' if wick_rej else ''}")
 
                 zone = setup["zone"]
                 inv = zone["zone_low"] if direction == "LONG" else zone["zone_high"]
@@ -837,6 +854,42 @@ class VortexScanner:
         except Exception as e:
             log.error(f"[S6_BOS ERROR] {ctx.pair}: {e}", exc_info=True)
 
+    # ── Wick rejection helper (shared by S3, S4, S6) ──────────────
+
+    def _get_wick_rejection(
+        self, pair: str, direction: str, zone_price: float,
+        zone_data: dict | None = None,
+    ) -> dict | None:
+        """
+        Check for wick rejection at zone on 30m/15m/5m candles.
+        Used by S3_imbal, S4, S6 as MANDATORY entry confirmation.
+        """
+        try:
+            from strategy2_wick import is_long_downside_wick, is_long_upside_wick
+        except Exception:
+            return None
+        for tf in ("30m", "15m", "5m"):
+            try:
+                candles_tf = get_candles(pair, tf, limit=20)
+            except Exception:
+                continue
+            if len(candles_tf) < 2:
+                continue
+            for c in candles_tf[-4:]:
+                if direction == "LONG":
+                    wick = is_long_downside_wick(c)
+                    if wick:
+                        diff_pct = abs(wick["wick_low"] - zone_price) / zone_price
+                        if diff_pct < 0.005:
+                            return {"tf": tf, "wick": wick}
+                else:
+                    wick = is_long_upside_wick(c)
+                    if wick:
+                        diff_pct = abs(wick["wick_high"] - zone_price) / zone_price
+                        if diff_pct < 0.005:
+                            return {"tf": tf, "wick": wick}
+        return None
+
     # ── Scan cycle ────────────────────────────────────────────
 
     def scan_once(self, btc_macro: str):
@@ -863,7 +916,8 @@ class VortexScanner:
             ctx = self._build_context(pair, btc_macro)
             self._scan_s1(ctx, current_price)
             self._scan_s2(ctx)
-            self._scan_s3(ctx)        # original S3 (FVG reclaim)
+            # NOTE: original S3 disabled — S3_imbal (FVG+Imbalance) replaces it
+            # self._scan_s3(ctx)        # legacy — commented out
             self._scan_s3_imbal(ctx)  # upgraded S3 (FVG + Imbalance)
             self._scan_s4_ob(ctx)     # S4 (Order Block + Breaker Block)
             self._scan_s5_eng(ctx)    # S5 (Engineered Liquidity)

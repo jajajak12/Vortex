@@ -115,10 +115,10 @@ def _detect_bos(candles_4h: list[dict], atr: float) -> list[dict]:
             if not vol_ok:
                 continue
 
-            # MSS: candle closes and holds above
+            # MSS: candle closes and holds above for 3+ candles (tightened from 2)
             holds = all(
                 candles_4h[j]["close"] > sl_price
-                for j in range(i + 1, min(i + 3, n))
+                for j in range(i + 1, min(i + 4, n))
             )
             if not holds:
                 continue
@@ -158,9 +158,10 @@ def _detect_bos(candles_4h: list[dict], atr: float) -> list[dict]:
             if not vol_ok:
                 continue
 
+            # MSS SHORT: candle closes and holds below for 3+ candles (tightened from 2)
             holds = all(
                 candles_4h[j]["close"] < sh_price
-                for j in range(i + 1, min(i + 3, n))
+                for j in range(i + 1, min(i + 4, n))
             )
             if not holds:
                 continue
@@ -341,18 +342,18 @@ def scan_bos_mss(
 
         in_zone = _is_in_zone(price, lo, hi)
 
-        # S1 overlap
+        # S1 overlap — ≤2% (tightened from 3%)
         has_s1 = any(
-            abs((z["low"]+z["high"])/2 - mid)/mid < 0.03 and z["type"] == d
+            abs((z["low"]+z["high"])/2 - mid)/mid < 0.02 and z["type"] == d
             for z in (s1_zones.get("LONG",[]) + s1_zones.get("SHORT",[]))
         )
 
-        # S3 overlap
+        # S3 overlap — ≤2% (tightened from 3%)
         has_s3 = any(
             (d == "LONG"  and f.get("direction") == "LONG" and
-             abs(f.get("fvg",{}).get("fvg_mid",0) - mid)/mid < 0.03) or
+             abs(f.get("fvg",{}).get("fvg_mid",0) - mid)/mid < 0.02) or
             (d == "SHORT" and f.get("direction") == "SHORT" and
-             abs(f.get("fvg",{}).get("fvg_mid",0) - mid)/mid < 0.03)
+             abs(f.get("fvg",{}).get("fvg_mid",0) - mid)/mid < 0.02)
             for f in fvg_setups
         )
 
