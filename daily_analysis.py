@@ -596,7 +596,7 @@ def generate_full_report(date_str: str, trades: list[dict],
 def telegram_summary(date_str: str, total: int, overall_wr: float,
                     avg_rr_v: float, fsr: float, dd: float,
                     strat_stats: dict, llm_recs: list[str],
-                    llm_status: str) -> str:
+                    llm_status: str, weights: dict | None = None) -> str:
 
     worst = best = ""
     if strat_stats:
@@ -613,6 +613,11 @@ def telegram_summary(date_str: str, total: int, overall_wr: float,
             clean = re.sub(r'\*+', '', clean)
             recs_block += f"\n▸ {clean[:120]}"
 
+    weights_block = ""
+    if weights:
+        w_lines = [f"{k}:{v:.2f}" for k, v in sorted(weights.items())]
+        weights_block = f"\n⚖️ Weights : {', '.join(w_lines)}"
+
     return (
         f"📊 VORTEX DAILY — {date_str}\n"
         f"━━━━━━━━━━━━━━━\n"
@@ -624,6 +629,7 @@ def telegram_summary(date_str: str, total: int, overall_wr: float,
         f"{worst}{best}\n"
         f"━━━━━━━━━━━━━━━\n"
         f"{status_icon} LLM: {llm_status}\n"
+        f"{weights_block}\n"
         f"{recs_block}\n"
         f"━━━━━━━━━━━━━━━\n"
         f"📁 analysis_reports/{date_str}_full_analysis.md"
@@ -696,10 +702,18 @@ def run():
     log.info(f"Report saved: {report_path}")
 
     # 8. Telegram
+    # Load current weights
+    try:
+        from weights import get_all_weights
+        current_weights = get_all_weights()
+    except Exception:
+        current_weights = None
+
     summary = telegram_summary(
         date_str, len(trades), overall_wr, avg_rr_v, fsr, dd,
         strat_stats, llm_result.get("recommendations", []),
-        llm_result.get("status", "unknown")
+        llm_result.get("status", "unknown"),
+        weights=current_weights,
     )
     send_telegram(summary)
 

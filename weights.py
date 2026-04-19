@@ -35,7 +35,7 @@ LOSS_DELTA  = -0.10
 FALSE_DELTA = -0.20
 
 # Min score untuk accept signal setelah weight applied
-MIN_ACCEPTED_SCORE = 6.0
+MIN_ACCEPTED_SCORE = 7.0
 
 _cache: dict | None = None
 

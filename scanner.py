@@ -27,7 +27,7 @@ from core.signal_handler import Signal, SignalHandler
 from trade_tracker import log_signal, update_trades_for_pair, get_stats, trim_old_trades
 from risk_manager import RiskManager, TradeSetup
 from weights import apply_weight_gate, get_all_weights
-from lessons_injector import get_strategy_context
+from lessons_injector import get_strategy_context, inject_lessons_to_context
 
 log = get_logger(__name__)
 
@@ -39,6 +39,7 @@ class PairContext:
     """State yang dikompute sekali per pair, dipakai semua strategi."""
     pair:             str
     btc_macro:        str
+    lesson_ctx:       str = ""         # injected lessons dari lessons.json
     wick_setups:      list = field(default_factory=list)
     fvg_imbal_setups: list = field(default_factory=list)  # S3 upgraded
     ob_setups:        list = field(default_factory=list)  # S4 OB
@@ -205,9 +206,12 @@ class VortexScanner:
         except Exception as e:
             log.error(f"[ENG INIT ERROR] {pair}: {e}")
             eng_setups = []
+        # Lesson injection ONCE per pair per scan cycle
+        lesson_ctx = inject_lessons_to_context("", pair)
         return PairContext(
             pair=pair,
             btc_macro=btc_macro,
+            lesson_ctx=lesson_ctx,
             wick_setups=wick_setups,
             fvg_imbal_setups=fvg_imbal_setups,
             ob_setups=ob_setups,
@@ -219,10 +223,10 @@ class VortexScanner:
     # ── Trade monitoring (dipanggil unconditional di scan_once) ──
 
     def _check_weight_gate(self, strategy_id: str, base_score: float) -> tuple[bool, float]:
-        """Darwinian gate: return (approved, score_adjusted). Reject if score_final < 6.0."""
+        """Darwinian gate: return (approved, score_adjusted). Reject if score_final < 7.0."""
         approved, final = apply_weight_gate(strategy_id, base_score)
         if not approved:
-            log.info(f"  ⛔ [WEIGHT GATE] {strategy_id} score={final:.2f} < 6.0 — REJECTED")
+            log.info(f"  ⛔ [WEIGHT GATE] {strategy_id} score={final:.2f} < 7.0 — REJECTED")
         return approved, final
 
     def _monitor_trades(self, pair: str, current_price: float):
@@ -243,6 +247,9 @@ class VortexScanner:
     # ── Strategy 1: Fresh Liquidity Grab ─────────────────────
 
     def _scan_s1(self, ctx: PairContext, current_price: float):
+        """S1: Fresh Liquidity Grab."""
+        if ctx.lesson_ctx:
+            log.info(f"[S1] {ctx.pair} lessons: {ctx.lesson_ctx[:200]}")
         try:
             zones    = get_fresh_liquidity_zones(ctx.pair)
             htf_bias = zones["htf_bias"]
@@ -357,6 +364,8 @@ class VortexScanner:
 
     def _scan_s1_chart(self, ctx: PairContext, current_price: float):
         """Pure classic chart patterns — Rising/Falling Wedge, H&S, Inv H&S, Bull/Bear Flag."""
+        if ctx.lesson_ctx:
+            log.info(f"[S1-CHART] {ctx.pair} lessons: {ctx.lesson_ctx[:200]}")
         try:
             if not ctx.chart_setups:
                 return
@@ -662,9 +671,8 @@ class VortexScanner:
     def _scan_s3_imbal(self, ctx: PairContext):
         """S3 upgraded: FVG + Imbalance with tighter thresholds for more entries."""
         # Lesson injection
-        strat_ctx = get_strategy_context("S3", ctx.pair)
-        if strat_ctx:
-            log.debug(f"[S3] {ctx.pair} context: {strat_ctx[:120]}...")
+        if ctx.lesson_ctx:
+            log.info(f"[S3] {ctx.pair} lessons: {ctx.lesson_ctx[:200]}")
 
         try:
             for setup in ctx.fvg_imbal_setups:
@@ -749,9 +757,8 @@ class VortexScanner:
         """S4: Order Block + Breaker Block reactive retest setups.
         S4 fires FIRST on overlapping zones — writes to _seen_ob for S6/S5.
         """
-        strat_ctx = get_strategy_context("S4", ctx.pair)
-        if strat_ctx:
-            log.debug(f"[S4] {ctx.pair} context: {strat_ctx[:120]}...")
+        if ctx.lesson_ctx:
+            log.info(f"[S4] {ctx.pair} lessons: {ctx.lesson_ctx[:200]}")
 
         try:
             s1_zones = {}
@@ -842,9 +849,8 @@ class VortexScanner:
         """S5: Engineered Liquidity Reversal — compression + sweep setups.
         Reads _seen_ob to skip zones S4 already owns.
         """
-        strat_ctx = get_strategy_context("S5", ctx.pair)
-        if strat_ctx:
-            log.debug(f"[S5] {ctx.pair} context: {strat_ctx[:120]}...")
+        if ctx.lesson_ctx:
+            log.info(f"[S5] {ctx.pair} lessons: {ctx.lesson_ctx[:200]}")
 
         try:
             for setup in ctx.eng_setups:
@@ -922,9 +928,8 @@ class VortexScanner:
         S6 fires AFTER S4 on overlapping zones (reads _seen_ob).
         Does NOT do reactive retests — those belong to S4.
         """
-        strat_ctx = get_strategy_context("S6", ctx.pair)
-        if strat_ctx:
-            log.debug(f"[S6] {ctx.pair} context: {strat_ctx[:120]}...")
+        if ctx.lesson_ctx:
+            log.info(f"[S6] {ctx.pair} lessons: {ctx.lesson_ctx[:200]}")
 
         try:
             s1_zones = {}
