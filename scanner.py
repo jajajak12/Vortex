@@ -26,6 +26,8 @@ from telegram_bot import alert_touch, alert_result, alert_stats, alert_info
 from core.signal_handler import Signal, SignalHandler
 from trade_tracker import log_signal, update_trades_for_pair, get_stats, trim_old_trades
 from risk_manager import RiskManager, TradeSetup
+from weights import apply_weight_gate, get_all_weights
+from lessons_injector import get_strategy_context
 
 log = get_logger(__name__)
 
@@ -216,12 +218,25 @@ class VortexScanner:
 
     # ── Trade monitoring (dipanggil unconditional di scan_once) ──
 
+    def _check_weight_gate(self, strategy_id: str, base_score: float) -> tuple[bool, float]:
+        """Darwinian gate: return (approved, score_adjusted). Reject if score_final < 6.0."""
+        approved, final = apply_weight_gate(strategy_id, base_score)
+        if not approved:
+            log.info(f"  ⛔ [WEIGHT GATE] {strategy_id} score={final:.2f} < 6.0 — REJECTED")
+        return approved, final
+
     def _monitor_trades(self, pair: str, current_price: float):
         """Cek TP/SL hit untuk semua open trade pair ini (semua strategi)."""
         for ct in update_trades_for_pair(pair, current_price):
             res   = "✅ WIN" if ct["result"] == "WIN" else "❌ LOSS"
             strat = ct.get("strategy", "?")
             log.info(f"{res} [{strat}]: {pair} {ct['direction']} | Close={ct['close_price']}")
+
+            # Darwinian Weighting — update bobot setelah trade close
+            from weights import update_weight
+            new_w = update_weight(strat, ct["result"])
+            log.info(f"  Weight [{strat}]: {new_w:.3f}")
+
             alert_result(ct)
             self.risk_mgr.on_trade_closed()
 
@@ -646,9 +661,21 @@ class VortexScanner:
 
     def _scan_s3_imbal(self, ctx: PairContext):
         """S3 upgraded: FVG + Imbalance with tighter thresholds for more entries."""
+        # Lesson injection
+        strat_ctx = get_strategy_context("S3", ctx.pair)
+        if strat_ctx:
+            log.debug(f"[S3] {ctx.pair} context: {strat_ctx[:120]}...")
+
         try:
             for setup in ctx.fvg_imbal_setups:
-                if setup["confidence_score"] < 7.0:
+                base_score = setup["confidence_score"]
+
+                # Darwinian weight gate
+                approved, final_score = self._check_weight_gate("S3", base_score)
+                if not approved:
+                    continue
+
+                if base_score < 7.0:
                     continue
                 direction = setup["direction"]
                 fk = f"{ctx.pair}_{direction}_{setup['fvg']['fvg_low']:.4f}"
@@ -722,6 +749,10 @@ class VortexScanner:
         """S4: Order Block + Breaker Block reactive retest setups.
         S4 fires FIRST on overlapping zones — writes to _seen_ob for S6/S5.
         """
+        strat_ctx = get_strategy_context("S4", ctx.pair)
+        if strat_ctx:
+            log.debug(f"[S4] {ctx.pair} context: {strat_ctx[:120]}...")
+
         try:
             s1_zones = {}
             try:
@@ -731,7 +762,12 @@ class VortexScanner:
                 pass
 
             for setup in ctx.ob_setups:
-                if setup["confidence_score"] < 8.0:
+                base_score = setup["confidence_score"]
+                approved, final_score = self._check_weight_gate("S4", base_score)
+                if not approved:
+                    continue
+
+                if base_score < 8.0:
                     continue
                 direction = setup["direction"]
 
@@ -806,9 +842,18 @@ class VortexScanner:
         """S5: Engineered Liquidity Reversal — compression + sweep setups.
         Reads _seen_ob to skip zones S4 already owns.
         """
+        strat_ctx = get_strategy_context("S5", ctx.pair)
+        if strat_ctx:
+            log.debug(f"[S5] {ctx.pair} context: {strat_ctx[:120]}...")
+
         try:
             for setup in ctx.eng_setups:
-                if setup["confidence_score"] < 7.5:
+                base_score = setup["confidence_score"]
+                approved, final_score = self._check_weight_gate("S5", base_score)
+                if not approved:
+                    continue
+
+                if base_score < 7.5:
                     continue
                 direction = setup["direction"]
 
@@ -877,6 +922,10 @@ class VortexScanner:
         S6 fires AFTER S4 on overlapping zones (reads _seen_ob).
         Does NOT do reactive retests — those belong to S4.
         """
+        strat_ctx = get_strategy_context("S6", ctx.pair)
+        if strat_ctx:
+            log.debug(f"[S6] {ctx.pair} context: {strat_ctx[:120]}...")
+
         try:
             s1_zones = {}
             try:
@@ -891,7 +940,12 @@ class VortexScanner:
                 fvg_setups=ctx.fvg_imbal_setups,
                 seen_ob=self._seen_ob,
             ):
-                if setup["confidence_score"] < 8.0:
+                base_score = setup["confidence_score"]
+                approved, final_score = self._check_weight_gate("S6", base_score)
+                if not approved:
+                    continue
+
+                if base_score < 8.0:
                     continue
                 direction = setup["direction"]
 
