@@ -1,0 +1,20 @@
+[
+  {
+    "type": "PREFER",
+    "description": "Conservative position sizing is working - 1% max DD with 2 losses shows good risk management",
+    "data_evidence": "Max drawdown=1.0% despite 0% winrate over 2 trades",
+    "added_date": "2026-04-19"
+  },
+  {
+    "type": "DIRECTIONAL",
+    "description": "ETHUSDT SHORT behavior (1522 candles) warrants observation - either patience was rewarded over longer timeframe or market conditions didn't favor the directional bet",
+    "data_evidence": "ETHUSDT held 1522 candles before SL hit - unusually long compared to SOLUSDT's 12 candles",
+    "added_date": "2026-04-19"
+  },
+  {
+    "type": "AVOID",
+    "description": "Drawing conclusions or changing rules at this sample size - 2 trades tells us nothing about strategy viability",
+    "data_evidence": "0% winrate over 2 trades vs breakeven WR of 33% at RR≥2 - far too early to assess",
+    "added_date": "2026-04-19"
+  }
+]

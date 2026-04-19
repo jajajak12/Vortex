@@ -270,8 +270,8 @@ def build_analysis_text(trades: list[dict], strat_stats: dict,
 
 # ── MiniMax LLM ─────────────────────────────────────────────────────────────
 
-MINIMAX_URL = "https://api.minimax.chat/v1/text/chatcompletion_v2"
-MINIMAX_MODEL = "MiniMax-Text-01"
+MINIMAX_URL   = "https://api.minimax.io/v1/chat/completions"
+MINIMAX_MODEL = "MiniMax-M2.7"
 
 
 def generate_llm_improvement(analysis_text: str, total_trades: int) -> dict:
@@ -346,7 +346,14 @@ def generate_llm_improvement(analysis_text: str, total_trades: int) -> dict:
         r = requests.post(MINIMAX_URL, headers=headers, json=payload, timeout=30)
         r.raise_for_status()
         resp_json = r.json()
-        raw = resp_json.get("choices", [{}])[0].get("messages", [{}])[0].get("text", "")
+        # MiniMax-M2.7: content in choices[0].message.content
+        # M2.7 includes <think>...</think> tags — strip them
+        try:
+            raw = resp_json.get("choices", [{}])[0].get("message", {}).get("content", "")
+            # Remove thinking tags and their content
+            raw = re.sub(r'<think>[\s\S]*?</think>', '', raw).strip()
+        except (IndexError, AttributeError):
+            raw = str(resp_json)
 
         # Try parse JSON from response
         try:
