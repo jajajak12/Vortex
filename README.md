@@ -78,12 +78,11 @@ config.py              — API keys, thresholds (gitignored)
 scanner.py             — main loop + all strategy scanners
 strategy1_liquidity.py — S1 zones + shared utilities
 strategy2_wick.py      — S2 wick detection
-strategy3_fvg.py       — S3 original FVG reclaim
-strategy3_fvg_imbalance.py — S3 upgraded (FVG + imbalance)
-strategy4_vpattern.py  — S4 original V pattern
-strategy4_orderblock.py — S4 upgraded (OB + breaker block)
-strategy5_engineered.py — S5 compression + engineered sweep
-strategy6_bos_mss.py   — S6 BOS + MSS + CHOCH
+strategy3_fvg.py            # S3 original FVG reclaim
+strategy3_fvg_imbalance.py  # S3 upgraded (FVG + imbalance)
+strategy4_orderblock.py     # S4 (Order Block + Breaker Block)
+strategy5_engineered.py      # S5 compression + engineered sweep
+strategy6_bos_mss.py         # S6 BOS + MSS + CHOCH
 risk_manager.py        — position sizing + 4 gate checks
 telegram_bot.py        — alerts (DETECTED disabled, only ENTRY)
 trade_tracker.py       — trades.json + winrate tracking

@@ -18,7 +18,6 @@ from strategy1_liquidity import (
 from strategy2_wick import scan_wick_setups
 from strategy3_fvg import scan_fvg_setups
 from strategy3_fvg_imbalance import scan_fvg_imbalance
-from strategy4_vpattern import scan_vpattern_setups, STRAT4_MIN_SCORE
 from strategy4_orderblock import scan_order_blocks
 from strategy5_engineered import scan_engineered
 from strategy6_bos_mss import scan_bos_mss
@@ -38,9 +37,8 @@ class PairContext:
     pair:             str
     btc_macro:        str
     wick_setups:      list = field(default_factory=list)
-    vpattern_setups:  list = field(default_factory=list)
     fvg_imbal_setups: list = field(default_factory=list)  # S3 upgraded
-    ob_setups:        list = field(default_factory=list)  # S4
+    ob_setups:        list = field(default_factory=list)  # S4 OB
     eng_setups:       list = field(default_factory=list)  # S5
     params:           dict = field(default_factory=dict)  # pair-specific overrides
 
@@ -105,10 +103,7 @@ class VortexScanner:
         # Permanent seen sets
         self._seen_wick:     set[str] = set()
         self._seen_fvg:      set[str] = set()
-        self._seen_vpattern: set[str] = set()
         self._seen_ob:       set[str] = set()   # S4 writes, S6 reads → overlap prevention
-
-        self.cd_vpattern_e = CooldownStore()
 
         self.signal_handler  = SignalHandler()
         self.rate_mon        = SignalRateMonitor()
@@ -145,12 +140,6 @@ class VortexScanner:
                     direction = setup["direction"]
                     fk = f"{pair}_{direction}_{setup['fvg']['fvg_low']:.4f}"
                     self._seen_fvg.add(fk)
-                # V Pattern — masukkan ke permanent seen set
-                for setup in scan_vpattern_setups(pair):
-                    direction = setup["direction"]
-                    ref = setup.get("v_low") or setup.get("v_high", 0)
-                    vk  = f"{pair}_{direction}_{setup['tf']}_{ref:.4f}"
-                    self._seen_vpattern.add(vk)
                 # OB — masukkan ke _seen_ob (S4 overlap prevention)
                 try:
                     from strategy4_orderblock import scan_order_blocks
@@ -193,11 +182,6 @@ class VortexScanner:
             log.error(f"[WICK INIT ERROR] {pair}: {e}")
             wick_setups = []
         try:
-            vpattern_setups = scan_vpattern_setups(pair)
-        except Exception as e:
-            log.error(f"[VPATTERN INIT ERROR] {pair}: {e}")
-            vpattern_setups = []
-        try:
             fvg_imbal_setups = scan_fvg_imbalance(pair, wick_setups=wick_setups, engineered_setups=[])
         except Exception as e:
             log.error(f"[FVG_IMBAL INIT ERROR] {pair}: {e}")
@@ -216,7 +200,6 @@ class VortexScanner:
             pair=pair,
             btc_macro=btc_macro,
             wick_setups=wick_setups,
-            vpattern_setups=vpattern_setups,
             fvg_imbal_setups=fvg_imbal_setups,
             ob_setups=ob_setups,
             eng_setups=eng_setups,
@@ -551,118 +534,6 @@ class VortexScanner:
         except Exception as e:
             log.error(f"[S3 ERROR] {ctx.pair}: {e}", exc_info=True)
 
-    # ── Strategy 4: V Pattern ─────────────────────────────────
-
-    def _scan_s4(self, ctx: PairContext):
-        try:
-            for setup in ctx.vpattern_setups:
-                if setup["confidence_score"] < STRAT4_MIN_SCORE:
-                    continue
-
-                direction = setup["direction"]
-                ref = setup.get("v_low") or setup.get("v_high", 0)
-                vk  = f"{ctx.pair}_{direction}_{setup['tf']}_{ref:.4f}"
-
-                if ENABLE_MACRO_FILTER and ctx.pair not in OWN_MACRO_PAIRS:
-                    if direction == "LONG"  and ctx.btc_macro == "BEAR":
-                        continue
-                    if direction == "SHORT" and ctx.btc_macro == "BULL":
-                        continue
-
-                if vk not in self._seen_vpattern:
-                    log.info(f"📐 [S4] V PATTERN {setup['pattern']}: {ctx.pair} "
-                             f"{setup['tf_label']} | Score={setup['confidence_score']} "
-                             f"| {setup['confidence_label']}")
-                    self._seen_vpattern.add(vk)
-
-                if not setup["in_entry_zone"]:
-                    continue
-                if self.cd_vpattern_e.is_on_cooldown(vk):
-                    continue
-
-                # HARD GATE: V-pattern tanpa rejection candle di V-point = bukan valid V
-                # V-bottom/V-top yang sah HARUS punya long wick rejection di titik reversal
-                if not setup["has_rejection"]:
-                    continue
-
-                # Entry confirmation — 5m (lebih responsive dari 30m)
-                # v_zone: zona sempit berbasis ATR di sekitar titik V
-                candles_5m = get_candles(ctx.pair, "5m", limit=50)
-                req_vol     = ctx.params["REQUIRE_VOLUME_SPIKE"]
-                atr         = setup.get("atr", ref * 0.01)  # fallback 1% jika atr tidak ada
-
-                if direction == "LONG":
-                    # Zone: tight band di sekitar V low — konfirmasi bounce dari support
-                    v_zone    = {"low":   ref - atr * 0.15,
-                                 "high":  ref + atr * 0.25,
-                                 "pivot": ref}
-                    rejection = check_rejection_long(candles_5m, v_zone,
-                                                     vol_spike_required=req_vol)
-                else:
-                    # Zone: tight band di sekitar V high — konfirmasi rejection dari resistance
-                    v_zone    = {"low":   ref - atr * 0.25,
-                                 "high":  ref + atr * 0.15,
-                                 "pivot": ref}
-                    rejection = check_rejection_short(candles_5m, v_zone,
-                                                      vol_spike_required=req_vol)
-
-                if not (rejection and rejection["confirmed"]):
-                    continue
-
-                t    = setup["trade"]
-                risk = self.risk_mgr.evaluate(TradeSetup(
-                    pair=ctx.pair, direction=direction,
-                    entry=t["entry"], sl=t["sl"], tp=t["tp2"],
-                    strategy="S4",
-                    risk_pct=ctx.params["RISK_PCT"],
-                    min_rr=ctx.params["MIN_RR_RATIO"],
-                    atr_sl_mult=ctx.params["ATR_SL_MIN_MULT"],
-                ))
-                if not risk.approved:
-                    log.warning(f"⛔ [S4] RISK REJECTED: {ctx.pair} — {risk.reason}")
-                    continue
-
-                log.info(f"✅ [S4] V PATTERN ENTRY {direction}: {ctx.pair} "
-                         f"{setup['tf_label']} @ {t['entry']} "
-                         f"Score={setup['confidence_score']} Size=${risk.position_usdt}")
-
-                sweep_note = "Liquidity sweep + " if setup["has_sweep"] else ""
-                bias_note  = " 1D bias aligned." if setup.get("bias_aligned") else ""
-                reason_s4  = (
-                    f"{setup['pattern']} {setup['tf_label']}: {sweep_note}"
-                    f"{int(setup['reversal_pct'] * 100)}% recovery "
-                    f"dari sharp move {setup['drop_size']:.4f}.{bias_note}"
-                )
-                ref_s4 = setup.get("v_low") or setup.get("v_high", 0)
-                inv_s4 = ref_s4
-                self.signal_handler.send_alert(Signal(
-                    strategy_id        = "S4",
-                    symbol             = ctx.pair,
-                    direction          = direction,
-                    timeframe          = setup["tf_label"],
-                    entry_price        = t["entry"],
-                    sl_price           = t["sl"],
-                    tp1_price          = t["tp1"],
-                    tp2_price          = t["tp2"],
-                    rr                 = risk.rr_ratio,
-                    score              = float(setup["confidence_score"]),
-                    reason             = reason_s4,
-                    risk_percent       = ctx.params["RISK_PCT"],
-                    position_size      = risk.position_usdt,
-                    invalidation_price = inv_s4,
-                ))
-                log_signal(ctx.pair, direction, t["entry"], t["sl"], t["tp2"],
-                           confluence_score=int(setup["confidence_score"]),
-                           regime_state=ctx.btc_macro, strategy="S4",
-                           position_usdt=risk.position_usdt,
-                           rr=risk.rr_ratio)
-                self.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
-                self.rate_mon.track(ctx.pair)
-                self.cd_vpattern_e.set(vk)
-
-        except Exception as e:
-            log.error(f"[S4 ERROR] {ctx.pair}: {e}", exc_info=True)
-
     # ── Strategy 3: FVG + Imbalance (UPGRADED) ─────────────────────
 
     def _scan_s3_imbal(self, ctx: PairContext):
@@ -992,12 +863,11 @@ class VortexScanner:
             ctx = self._build_context(pair, btc_macro)
             self._scan_s1(ctx, current_price)
             self._scan_s2(ctx)
-            self._scan_s3(ctx)      # original S3 (FVG reclaim)
+            self._scan_s3(ctx)        # original S3 (FVG reclaim)
             self._scan_s3_imbal(ctx)  # upgraded S3 (FVG + Imbalance)
-            self._scan_s4(ctx)      # original S4 (V Pattern)
-            self._scan_s4_ob(ctx)   # new S4 (Order Block)
-            self._scan_s5_eng(ctx)  # new S5 (Engineered)
-            self._scan_s6_bos(ctx)  # new S6 (BOS + MSS)
+            self._scan_s4_ob(ctx)     # S4 (Order Block + Breaker Block)
+            self._scan_s5_eng(ctx)    # S5 (Engineered Liquidity)
+            self._scan_s6_bos(ctx)    # S6 (BOS + MSS / CHOCH)
             time.sleep(0.3)
 
     # ── Main loop ─────────────────────────────────────────────
@@ -1012,8 +882,8 @@ class VortexScanner:
             f"🤖 Vortex aktif — 6 strategi\n"
             f"S1: Liquidity Grab\n"
             f"S2: Wick Fill\n"
-            f"S3: FVG Reclaim\n"
-            f"S4: V Pattern + Order Block\n"
+            f"S3: FVG + Imbalance\n"
+            f"S4: Order Block + Breaker Block\n"
             f"S5: Engineered Liquidity\n"
             f"S6: BOS + MSS / CHOCH\n"
             f"Pairs: {len(CRYPTO_PAIRS)} | Interval: {SCAN_INTERVAL_SECONDS}s"

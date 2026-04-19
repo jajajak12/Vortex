@@ -30,7 +30,7 @@ tail -f /tmp/scanner.log
 - `strategy2_wick.py` — S2 Wick Fill (1W/1D/4H, LONG & SHORT)
 - `strategy3_fvg.py` — S3 FVG Reclaim after Liquidity Sweep
 - `risk_manager.py` — RiskManager: position sizing + 4 gate (RR, ATR SL, max open, daily risk)
-- `telegram_bot.py` / `wick_alerts.py` / `fvg_alerts.py` / `vpattern_alerts.py` — alert per strategi
+- `telegram_bot.py` / `wick_alerts.py` / `fvg_alerts.py` / `alerts/` — alert per strategi
 - `trade_tracker.py` — catat signal, monitor TP/SL, hitung winrate per strategi
 - `trades.json` — hasil tracking (auto-generated saat runtime)
 
@@ -57,17 +57,18 @@ XAUUSDT (gold — session filter + own macro)
 - ✅ WIN / ❌ LOSS — hasil trade otomatis
 - 📊 WINRATE — laporan harian
 
-> **Catatan**: Alert "DETECTED" (wick/FVG/VPattern ditemukan) dinonaktifkan — tidak actionable
-> sebelum harga masuk zona. Hanya ENTRY alert yang dikirim ke Telegram.
+> **Catatan**: Alert "DETECTED" (wick/FVG/OB ditemukan) dinonaktifkan — tidak actionable
+> sebelum harga masuk zona. Hanya ENTRY yang dikirim ke Telegram.
 
 ## Bug yang Sudah Difix
 1. `is_touching_zone` — price harus dalam [low-buffer, high+buffer], bukan satu sisi
 2. `is_mitigated` — zona yang sudah dikunjungi ulang setelah terbentuk dibuang
 3. SL placement — pakai zone boundary, bukan prev liquidity (dulu bisa 7%+ jauh)
 4. Daily risk calc, pair-specific touch threshold, S2 SHORT wick detection
-5. Startup alert blast — `_warmup()` pre-seed `_seen_wick`/`_seen_fvg`/`_seen_vpattern` saat launch
-6. Cooldown expiry blast — diganti permanent seen set (tidak blast ulang tiap 4 jam)
-7. Telegram spam — alert DETECTED (wick/FVG/VPattern) dinonaktifkan; scanner tetap log ke file tapi tidak kirim ke Telegram. Hanya ENTRY yang actionable.
+5. Startup alert blast — `_warmup()` pre-seed `_seen_wick`/`_seen_fvg`/`_seen_ob` saat launch
+6. Cooldown expiry blast — replaced with permanent seen set (no blast on cooldown expiry)
+7. Telegram spam — DETECTED alerts (wick/FVG) disabled; only actionable ENTRY sent to Telegram.
+8. S4 V Pattern removed — replaced with Order Block + Breaker Block (Apr 2026)
 
 ## Git / Push
 PAT disimpan di `config.py` (GITHUB_PAT) — tidak perlu paste manual.

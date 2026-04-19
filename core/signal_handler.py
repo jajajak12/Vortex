@@ -34,8 +34,8 @@ SCORE_HIGH   = 7.5
 SCORE_MEDIUM = 5.0
 
 # S4 (V Pattern) — TP caps
-S4_TP1_MAX_RR = 3.5   # TP1 max RR 1:3.5
-S4_TP2_MAX_RR = 5.0   # TP2 max RR 1:5.0 (runner)
+S4_TP1_MAX_RR = 3.0   # TP1 max RR 1:3.0
+S4_TP2_MAX_RR = 4.8   # TP2 max RR 1:4.8
 
 # S4 — minimum score thresholds (tiered by original RR)
 S4_MIN_SCORE     = 7.8   # normal
@@ -71,7 +71,7 @@ class Signal:
 
 # ── S4 TP cap utility ─────────────────────────────────────────────
 
-def adjust_tp_for_vpattern(
+def adjust_tp_for_ob(
     entry: float,
     sl_price: float,
     tp1: float,
@@ -79,9 +79,9 @@ def adjust_tp_for_vpattern(
     direction: str,
 ) -> tuple[float, Optional[float]]:
     """
-    Cap TP untuk S4 ke batas RR realistis.
-      TP1: max RR 1:3.5  (primary target, probabilitas lebih tinggi)
-      TP2: max RR 1:5.0  (runner, optional)
+    Cap TP untuk S4-OB (Order Block) ke batas RR realistis.
+      TP1: max RR 1:3.0
+      TP2: max RR 1:4.8
     """
     sl_dist = abs(entry - sl_price)
     if sl_dist == 0:
@@ -127,7 +127,7 @@ class SignalHandler:
         if signal.original_rr == 0.0:
             signal.original_rr = signal.rr
 
-        tp1_adj, tp2_adj = adjust_tp_for_vpattern(
+        tp1_adj, tp2_adj = adjust_tp_for_ob(
             signal.entry_price, signal.sl_price,
             signal.tp1_price, signal.tp2_price,
             signal.direction,
