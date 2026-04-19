@@ -232,11 +232,19 @@ def build_analysis_text(trades: list[dict], strat_stats: dict,
                        dd: float, dd_p: str, dd_t: str,
                        current_weights: dict | None = None) -> str:
 
+    n = len(trades)
+    if n < 10:
+        tier = "TIER 1 — INSUFFICIENT_DATA (< 10 trades)"
+    elif n < 30:
+        tier = f"TIER 2 — OBSERVASI ({n} trades, need 30 for IMPROVEMENT)"
+    else:
+        tier = f"TIER 3 — IMPROVEMENT ({n} trades)"
     lines = [
         f"## VORTEX TRADING PERFORMANCE SUMMARY (as of {date.today().isoformat()})",
+        f"### ANALYSIS TIER: {tier}",
         f"",
         f"### Overall Metrics",
-        f"- Total Trades: {len(trades)}",
+        f"- Total Trades: {n}",
         f"- Winrate: {overall_wr:.1f}%",
         f"- Average RR: {avg_rr_v:.2f}",
         f"- False Signal Rate: {fsr:.1f}% (losses within 5 candles of entry)",
@@ -330,6 +338,11 @@ def generate_llm_improvement(analysis_text: str, total_trades: int) -> dict:
       - recommendations: list[str]
       - lessons: list[dict]
       - raw_response: str
+
+    Mode berdasarkan sample size:
+      < 10 trades  → INSUFFICIENT_DATA, skip LLM call
+      10-29 trades → OBSERVASI, observasi kualitatif, no rule changes
+      >= 30 trades → IMPROVEMENT, max 2-3 actionable recommendations
     """
     if not MINIMAX_API_KEY:
         return {
@@ -340,39 +353,61 @@ def generate_llm_improvement(analysis_text: str, total_trades: int) -> dict:
             "raw_response": "MINIMAX_API_KEY not configured",
         }
 
+    # ── TIER 1: Data terlalu kecil ──────────────────────────────────────────
+    if total_trades < 10:
+        return {
+            "status":  "insufficient_data",
+            "insights": [
+                f"Observasi Mode — Data masih terlalu kecil ({total_trades} trades) "
+                f"untuk analisis mendalam. Minimal perlu 30 trades untuk "
+                f"rekomendasi yang statistically significant.",
+                "Kumpulkan minimal 10 trades dulu sebelum observasi kualitatif.",
+                "Terus pantau hasil scan — setiap trade yang закрыт (TP/SL hit) "
+                "otomatis tercatat di trades.json.",
+            ],
+            "recommendations": [],
+            "lessons": [],
+            "raw_response": f"insufficient_data: {total_trades} trades < 10",
+        }
+
+    # ── TIER 2: Observasi kualitatif (10-29 trades) ─────────────────────────
     is_observasi = total_trades < 30
 
-    system_prompt = """You are Vortex Senior Quant Engineer specializing in crypto trading strategy analysis.
+    system_prompt = """You are Vortex Senior Quant Engineer — crypto trading signal analysis.
 
-RULES you MUST follow:
-1. You ONLY cite numbers that appear in the data. Never invent statistics.
-2. If sample size is too small (< 30 trades), say so explicitly and what patterns ARE emerging.
-3. Max 3 recommendations. Each recommendation MUST cite a specific number from the data.
-4. Extract lessons: PREFER (something that correlates with wins), AVOID (something that correlates with losses), DIRECTIONAL (macro context note).
-5. If a strategy has 0% or 100% winrate on < 5 trades, label it INCONCLUSIVE — do not draw conclusions.
-6. You are data-driven and cautious. You never over-optimize. You prioritize risk management.
+STRICT RULES:
+1. Cite ONLY numbers from the provided data. Never invent or extrapolate statistics.
+2. Give qualitative observations — NO rule changes, NO parameter adjustments.
+3. Max 3 insights. Label [INCONCLUSIVE] on any strategy with < 5 trades.
+4. Lessons: PREFER / AVOID / DIRECTIONAL only — cite specific data evidence.
+5. Data-driven and cautious. Never over-optimize. Risk management is priority.
 
 OUTPUT FORMAT — respond ONLY with valid JSON:
-{"insights": ["... cite numbers ...", "..."], "recommendations": ["[ACTION-1] Specific change: because X% of losses came from this pattern", "[ACTION-2] ...", "[ACTION-3] ..."], "lessons": [{"type": "PREFER|AVOID|DIRECTIONAL", "description": "...", "data_evidence": "..."}]}"""
+{"insights": ["...", "..."], "recommendations": [], "lessons": [{"type": "PREFER|AVOID|DIRECTIONAL", "description": "...", "data_evidence": "..."}]}"""
 
     if is_observasi:
-        mode_instruction = f"""OBSERVASI MODE — {total_trades} trades collected (need 30 for recommendations).
-Give qualitative observations only. Focus on:
-1. Which strategy/pair COMBINATIONS are showing early promise (even if not yet statistically significant)
-2. Any emerging patterns in FALSE SIGNALS ( setups that look good but fail quickly)
-3. Risk management observations (avg loss size, max drawdown trend)
-4. What the data CANNOT tell us yet due to sample size
+        mode_instruction = f"""OBSERVASI MODE ({total_trades} trades) — data masih dalam pengumpulan.
+Goal: observasi kualitatif. JANGAN memberikan rekomendasi perubahan rule.
 
-Do NOT make any rule change recommendations. Simply observe and note what to watch."""
+Fokus pada:
+1. Strategy/pair COMBINATIONS yang mulai terlihat promising (walau belum signifikan)
+2. Pola FALSE SIGNALS — setups yang terlihat bagus tapi fail cepat (TP/SL < 5 candles)
+3. Risk management observations — avg loss size, max drawdown trend
+4. Apa yang BELUM bisa disimpulkan karena sample size terlalu kecil
+5. Strategy yang paling aktif (paling banyak signal)
+
+Setiap insight harus cite number dari data. Label [INCONCLUSIVE] untuk strategi < 5 trades."""
     else:
-        mode_instruction = f"""IMPROVEMENT MODE — {total_trades} trades collected.
-Analyze the data rigorously. Provide max 3 actionable recommendations.
-Each recommendation must include:
-- The specific number from the data that supports it (e.g. "S4 has 0% winrate over 6 trades, all losses occurred within 10 candles")
-- The proposed change (e.g. "Raise S4 min score gate from 8.0 to 9.5")
-- Expected outcome (e.g. "Would reduce false signals by filtering weaker setups")
+        mode_instruction = f"""IMPROVEMENT MODE ({total_trades} trades) — cukup data untuk rekomendasi actionable.
 
-Also extract any learnable patterns (PREFER/AVOID/DIRECTIONAL)."""
+RULES:
+- Max 2-3 rekomendasi. Setiap rekomendasi WAJIB include:
+  1. Number spesifik dari data (e.g. "S4: 0% winrate, 6 trades, semua loss < 10 candles")
+  2. Proposed change (e.g. "Raise S4 min score gate 8.0 → 9.5")
+  3. Expected outcome (e.g. "Reduce false signals by filtering weaker setups")
+- Jika tidak ada enough evidence untuk rekomendasi, tulis:
+  "No actionable recommendations yet — data still inconclusive for specific rule changes"
+- Extract PREFER / AVOID / DIRECTIONAL lessons dari pola yang terlihat."""
 
     user_prompt = f"""{mode_instruction}
 
@@ -660,7 +695,7 @@ def telegram_summary(date_str: str, total: int, overall_wr: float,
             worst = f" Worst: {sorted_s[0][0]} {sorted_s[0][1]['winrate']}%"
             best  = f" Best: {sorted_s[-1][0]} {sorted_s[-1][1]['winrate']}%"
 
-    status_icon = "✅" if llm_status == "success" else "⚠️"
+    status_icon = {"success": "✅", "insufficient_data": "💤", "error": "⚠️"}.get(llm_status, "⚠️")
     recs_block = ""
     if llm_recs:
         for r in llm_recs[:3]:
@@ -735,8 +770,15 @@ def run():
     )
 
     # 5. LLM analysis
-    log.info(f"Calling MiniMax API (mode={'OBSERVASI' if len(trades) < 30 else 'IMPROVEMENT'})...")
-    llm_result = generate_llm_improvement(analysis_text, len(trades))
+    n = len(trades)
+    if n < 10:
+        mode_label = f"INSUFFICIENT_DATA ({n} trades)"
+    elif n < 30:
+        mode_label = f"OBSERVASI ({n} trades)"
+    else:
+        mode_label = f"IMPROVEMENT ({n} trades)"
+    log.info(f"Calling MiniMax API ({mode_label})...")
+    llm_result = generate_llm_improvement(analysis_text, n)
     log.info(f"LLM status: {llm_result['status']}")
     for ins in llm_result.get("insights", []):
         log.info(f"  LLM insight: {ins[:80]}")
