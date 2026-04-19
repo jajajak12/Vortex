@@ -15,6 +15,7 @@ from strategy1_liquidity import (
     is_touching_zone, check_rejection_long, check_rejection_short,
     calculate_trade,
 )
+from strategy1_chartpattern import scan_chartpatterns
 from strategy2_wick import scan_wick_setups
 from strategy3_fvg import scan_fvg_setups
 from strategy3_fvg_imbalance import scan_fvg_imbalance
@@ -39,6 +40,7 @@ class PairContext:
     wick_setups:      list = field(default_factory=list)
     fvg_imbal_setups: list = field(default_factory=list)  # S3 upgraded
     ob_setups:        list = field(default_factory=list)  # S4 OB
+    chart_setups:     list = field(default_factory=list)  # S1 Chart Patterns
     eng_setups:       list = field(default_factory=list)  # S5
     params:           dict = field(default_factory=dict)  # pair-specific overrides
 
@@ -192,6 +194,11 @@ class VortexScanner:
             log.error(f"[OB INIT ERROR] {pair}: {e}")
             ob_setups = []
         try:
+            chart_setups = scan_chartpatterns(pair)
+        except Exception as e:
+            log.error(f"[CHART_PATTERN INIT ERROR] {pair}: {e}")
+            chart_setups = []
+        try:
             eng_setups = scan_engineered(pair)
         except Exception as e:
             log.error(f"[ENG INIT ERROR] {pair}: {e}")
@@ -202,6 +209,7 @@ class VortexScanner:
             wick_setups=wick_setups,
             fvg_imbal_setups=fvg_imbal_setups,
             ob_setups=ob_setups,
+            chart_setups=chart_setups,
             eng_setups=eng_setups,
             params=get_pair_params(pair),
         )
@@ -329,6 +337,106 @@ class VortexScanner:
 
         except Exception as e:
             log.error(f"[S1 ERROR] {ctx.pair}: {e}", exc_info=True)
+
+    # ── Strategy 1B: Chart Patterns ───────────────────────────────
+
+    def _scan_s1_chart(self, ctx: PairContext, current_price: float):
+        """Pure classic chart patterns — Rising/Falling Wedge, H&S, Inv H&S, Bull/Bear Flag."""
+        try:
+            if not ctx.chart_setups:
+                return
+
+            # Macro alignment (optional — same as other strategies)
+            for setup in ctx.chart_setups:
+                direction = setup["direction"]
+
+                # Filter direction by macro
+                if ENABLE_MACRO_FILTER and ctx.pair not in OWN_MACRO_PAIRS:
+                    if direction == "LONG" and ctx.btc_macro == "BEAR":
+                        continue
+                    if direction == "SHORT" and ctx.btc_macro == "BULL":
+                        continue
+
+                # Cooldown per pattern+zone
+                zone_mid = setup["zone_mid"]
+                ckey = f"{ctx.pair}_{direction}_{setup['pattern']}_{zone_mid:.4f}"
+                if self.cd_entry.is_on_cooldown(ckey):
+                    continue
+
+                # Wick rejection gate (MANDATORY — 30m close vs zone boundary)
+                zone_high = setup["zone_high"]
+                zone_low  = setup["zone_low"]
+                ref_price = zone_high if direction == "LONG" else zone_low
+                if not self._get_wick_rejection(ctx.pair, direction, ref_price):
+                    continue
+
+                # Entry price: midpoint of broken channel
+                entry = zone_mid
+                # SL: 1 ATR outside zone (same direction as pattern)
+                atr = ctx.params.get("ATR_SL_MIN_MULT", 1.0) * ctx.params.get("atr_mult", 0.015) * entry
+                sl  = (zone_low - 1.5 * atr) if direction == "LONG" else (zone_high + 1.5 * atr)
+                # TP1: 1:2.0 / TP2: 1:3.0
+                dist = abs(entry - sl)
+                tp1  = entry + dist * 2.0 if direction == "LONG" else entry - dist * 2.0
+                tp2  = entry + dist * 3.0 if direction == "LONG" else entry - dist * 3.0
+
+                # Score: base 5.5, min 8.0 for signal
+                score = 5.5
+                if setup.get("vol_confirmed"):
+                    score += 1.5
+                score += min(setup.get("atr_pct", 0) / 10.0, 1.5)  # ATR width bonus
+                if score < 8.0:
+                    continue
+
+                # Risk evaluation
+                risk = self.risk_mgr.evaluate(TradeSetup(
+                    pair=ctx.pair, direction=direction,
+                    entry=entry, sl=sl, tp=tp1,
+                    strategy="S1-CHART",
+                    risk_pct=ctx.params["RISK_PCT"],
+                    min_rr=ctx.params["MIN_RR_RATIO"],
+                    atr_sl_mult=ctx.params["ATR_SL_MIN_MULT"],
+                ))
+                if not risk.approved:
+                    log.warning(f"⛔ [S1-CHART] RISK REJECTED: {ctx.pair} — {risk.reason}")
+                    continue
+
+                log.info(f"✅ [S1-CHART] ENTRY {direction}: {ctx.pair} {setup['pattern']} "
+                         f"E={entry:.4f} SL={sl:.4f} TP1={tp1:.4f} TP2={tp2:.4f} "
+                         f"RR={risk.rr_ratio:.1f} Score={score:.1f}")
+
+                reason = (
+                    f"{setup['pattern']} confirmed on 4H. "
+                    f"Breakout on 1H with {setup['vol_ratio']:.1f}x volume. "
+                    f"Entry at broken channel {direction}."
+                )
+                inv = zone_low if direction == "LONG" else zone_high
+                self.signal_handler.send_alert(Signal(
+                    strategy_id        = "S1-CHART",
+                    symbol              = ctx.pair,
+                    direction           = direction,
+                    timeframe           = "30m",
+                    entry_price         = entry,
+                    sl_price            = sl,
+                    tp1_price           = tp1,
+                    tp2_price           = tp2,
+                    rr                  = risk.rr_ratio,
+                    score               = round(score, 1),
+                    reason              = reason,
+                    risk_percent        = ctx.params["RISK_PCT"],
+                    position_size       = risk.position_usdt,
+                    invalidation_price  = inv,
+                ))
+                log_signal(ctx.pair, direction, entry, sl, tp1,
+                           regime_state=ctx.btc_macro, strategy="S1-CHART",
+                           position_usdt=risk.position_usdt,
+                           rr=risk.rr_ratio)
+                self.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
+                self.rate_mon.track(ctx.pair)
+                self.cd_entry.set(ckey)
+
+        except Exception as e:
+            log.error(f"[S1-CHART ERROR] {ctx.pair}: {e}", exc_info=True)
 
     # ── Strategy 2: Wick Fill ─────────────────────────────────
 
@@ -914,7 +1022,8 @@ class VortexScanner:
             self._monitor_trades(pair, current_price)
 
             ctx = self._build_context(pair, btc_macro)
-            self._scan_s1(ctx, current_price)
+            self._scan_s1(ctx, current_price)    # S1: Liquidity Grab (existing)
+            self._scan_s1_chart(ctx, current_price)  # S1: Chart Patterns (new)
             self._scan_s2(ctx)
             # NOTE: original S3 disabled — S3_imbal (FVG+Imbalance) replaces it
             # self._scan_s3(ctx)        # legacy — commented out
