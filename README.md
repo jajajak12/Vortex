@@ -1,205 +1,115 @@
-# Vortex
+# Vortex Trading Agent
 
-AI trading signal agent untuk crypto & gold — scanner only, tidak eksekusi trade otomatis.
-
-Menjalankan **4 strategi** secara paralel setiap scan cycle dengan risk management terintegrasi di **13 pairs** (12 crypto + XAUUSDT).
-
----
-
-## Strategi
-
-### Strategy 1 — Fresh Liquidity Grab + Rejection
-
-1. **Zone Detection (4H)** — identifikasi swing high/low yang:
-   - Terbentuk ≥10 candle lalu (`is_fresh`)
-   - Belum pernah dikunjungi lagi setelah terbentuk (`is_mitigated = False`)
-2. **HTF Trend Filter** — 4H EMA50 + BTC EMA200 1W harus searah (double confirmation)
-3. **Touch Alert (30m)** — deteksi ketika harga memasuki area zona
-4. **Entry Signal (5m)** — konfirmasi 2 candle:
-   - Candle 1: false breakout (spike tembus zona, close kembali masuk dengan strength ≥30%)
-   - Candle 2: konfirmasi arah (bullish untuk LONG, bearish untuk SHORT)
-5. **Trade Calculation** — SL tepat di luar batas zona, TP ke next liquidity dari struktur pasar (fallback ke 1:1.5 RR)
-
-### Strategy 2 — Wick Fill (LONG & SHORT)
-
-1. **Wick Detection (1W / 1D / 4H)** — identifikasi candle dengan long wick signifikan:
-   - **LONG**: downside wick — lower wick ≥ 1.5x body, ATAU ≥ 30% total range
-   - **SHORT**: upside wick — upper wick ≥ 1.5x body, ATAU ≥ 30% total range
-   - Wick belum pernah ditest ulang (`is_wick_mitigated = False`)
-2. **Entry Zone** — LONG: antara wick low dan 50% level | SHORT: antara wick high dan 50% level
-3. **Entry Signal** — harga masuk entry zone + konfirmasi rejection di 5m
-4. **Trade Calculation**:
-   - LONG: SL 0.8% di bawah wick low, TP1: 50% fill, TP2: 100% fill (body bottom)
-   - SHORT: SL 0.8% di atas wick high, TP1: 50% fill, TP2: 100% fill (body top)
-5. **Confluence Scoring** — dekat EMA50 (+2), massive wick (+1), TF lebih tinggi (+1/+2)
-
-### Strategy 4 — V Pattern (Sharp Reversal)
-
-**MTF approach:** Deteksi 4H → Bias 1D → Entry konfirmasi 30m
-
-1. **V-Bottom (Bullish)** / **V-Top (Bearish)** terdeteksi di 4H atau 1D:
-   - Sharp move ≥ 1.8x ATR dalam 3-8 candle
-   - Diikuti reversal ≥ 60% dari move awal
-   - Rejection candle / long wick (≥30% range) di titik V
-2. **1D Bias check** — EMA50 1D harus searah dengan arah V (LONG/SHORT) → +1 score
-3. **Entry zone** — harga masih dalam 80% recovery (upside/downside tersisa)
-4. **Entry confirmation** — rejection candle di 30m (lebih reliable dari 5m untuk pola besar)
-5. **Trade calculation**:
-   - SL: 0.5% di luar titik V (low untuk V-Bottom, high untuk V-Top)
-   - TP1: Neckline (pre-drop high / pre-rally low)
-   - TP2: Extension 1:1 (neckline ± move size)
-6. **Liquidity sweep bonus** — jika V point menembus recent swing sebelum reversal: +1.5 score
-7. **Min score**: 5.5/10 untuk kirim alert, termasuk 1D = 6.0/10 secara efektif
-
----
-
-### Strategy 3 — FVG Reclaim after Liquidity Sweep
-
-1. **Liquidity Sweep Detection (4H)** — candle menembus swing low/high lalu close kembali di dalam (false breakout di level penting)
-2. **FVG Detection** — setelah sweep, cari displacement candle yang meninggalkan Fair Value Gap (imbalance):
-   - Bullish FVG: `high[i+2] < low[i]` → zone = `[high[i+2], low[i]]`
-   - Bearish FVG: `low[i+2] > high[i]` → zone = `[high[i], low[i+2]]`
-3. **Reclaim** — harga retrace ke FVG zone = entry opportunity
-4. **Entry Signal** — rejection candle di 5m (shared dengan Strat 1 & 2)
-5. **Confluence Scoring (max 10)**: base sweep+FVG (5) + HTF 4H alignment (+2) + Strat 2 wick overlap (+2) + FVG size > ATR (+1)
-6. Signal hanya dikirim jika score ≥ 7
-
----
-
-## Risk Management
-
-Terintegrasi di semua strategi via `RiskManager` singleton:
-
-| Gate | Kondisi | Tindakan |
-|------|---------|----------|
-| Min RR | RR < 2.0 (atau override per pair) | Reject signal |
-| ATR SL | SL < 0.5× ATR | Reject signal (SL terlalu sempit) |
-| Max Open | Open trades ≥ 5 | Reject signal |
-| Daily Risk | Total risk hari ini + risk baru > 3% | Reject signal |
-
-**Position sizing**: `risk_amount / sl_pct` → notional USDT face value
-
----
-
-## Pairs
-
-```
-BTCUSDT  ETHUSDT  BNBUSDT  SOLUSDT
-XRPUSDT  ADAUSDT  AVAXUSDT DOGEUSDT
-DOTUSDT  LINKUSDT MATICUSDT ATOMUSDT
-XAUUSDT  (Gold — parameter khusus, session filter aktif)
-```
-
-**XAUUSDT — Treatment Khusus:**
-
-| Parameter | Crypto default | XAUUSDT |
-|-----------|---------------|---------|
-| Risk per trade | 1% | 0.5% (volatility lebih tinggi) |
-| Min RR | 2.0 | 2.5 (lebih selektif) |
-| ATR SL multiplier | 0.5× | 1.0× (stop hunt lebih ganas) |
-| Volume spike required | Ya | Tidak (volume gold di Binance kurang reliable) |
-| Touch threshold | 0.3% | 0.5% (spread lebih besar) |
-| Macro filter | BTC EMA200 1W | Gold EMA50 4H sendiri (tidak ikut BTC) |
-| Session filter | Tidak | Ya — skip Jumat 21:00 UTC → Minggu 22:00 UTC (weekend gap) |
-
----
+AI-powered crypto scanner for Binance Spot — paper trading, 6 strategies.
 
 ## Setup
 
-### 1. Clone repo
-
 ```bash
-git clone https://github.com/jajajak12/Vortex.git
-cd Vortex
-```
-
-### 2. Install dependencies
-
-```bash
+cd ~/vortex
 pip install --break-system-packages -r requirements.txt
+cp config.example.py config.py   # add your API keys + Telegram bot token
+python3 -u scanner.py > /tmp/vortex.log 2>&1 &
+tail -f /tmp/vortex.log
 ```
 
-### 3. Buat config.py
+## Strategies
 
-```python
-# Telegram
-TELEGRAM_BOT_TOKEN = "your_bot_token"   # dari @BotFather
-TELEGRAM_CHAT_ID   = "your_chat_id"     # dari @userinfobot
+| ID | Name | TF | Entry | Min Score | Description |
+|----|------|----|-------|-----------|-------------|
+| S1 | Liquidity Grab | 4H→30m | 30m | 6.0 | Fresh zone touch + 5m rejection |
+| S2 | Wick Fill | 4H→30m | 30m | 7.0 | Wick zone entry + 5m rejection |
+| S3 | FVG Reclaim | 4H→30m | 30m | 7.0 | FVG + Imbalance after sweep |
+| S4 | V Pattern | 4H→30m | 30m | 8.0 | V-bottom/V-top pattern |
+| S4 | Order Block | 4H→30m | 30m | 8.0 | OB + Breaker Block retest |
+| S5 | Engineered | 4H→30m | 30m | 7.5 | Compression + engineered sweep |
+| S6 | BOS + MSS | 4H→30m | 30m | 8.0 | Break of structure + MSS/CHOCH |
 
-# Binance (read-only)
-BINANCE_API_KEY    = "your_api_key"
-BINANCE_API_SECRET = "your_api_secret"
+## Strategy Ownership (Overlap Prevention)
 
-# Pairs
-CRYPTO_PAIRS = ["BTCUSDT", "ETHUSDT", ...]
+- **S4 (OB)**: owns REACTIVE RETESTS at broken structure
+- **S5 (Eng)**: owns COMPRESSION + ENGINEERED SWEEPS (aggressive)
+- **S6 (BOS)**: owns MOMENTUM BREAKS + HOLD (NOT reactive retests)
 
-# Risk
-ACCOUNT_BALANCE    = 10000.0
-RISK_PCT_DEFAULT   = 1.0
-MAX_DAILY_RISK_PCT = 3.0
-MAX_OPEN_TRADES    = 5
-MIN_RR_RATIO       = 2.0
+Overlapping zones → S4 fires first, S5/S6 skip via `_seen_ob` handshake.
+
+## Detection Logic
+
+| Strategy | Detect | Confirm | Entry |
+|----------|--------|---------|-------|
+| S1 Liquidity | 4H swing zones | 1H zone touch | 30m false breakout |
+| S2 Wick | 4H wick | 1H zone in | 30m rejection |
+| S3 FVG | 4H FVG/imbalance | 1H in zone | 30m wick rejection |
+| S4 OB | 4H order block | 1H touched | 30m rejection |
+| S5 Eng | 4H compression | 1H sweep | 30m reclaim |
+| S6 BOS | 4H structure break | 1H hold | 30m displacement |
+
+## Hard Gates
+
+- TP1 max 1:3.0, TP2 max 1:4.8 (all strategies)
+- Volume spike required for all entries
+- Wick rejection MANDATORY at 30m (S3, S4-OB, S5, S6)
+- Macro filter: skip opposite-BTC-regime setups
+
+## Scoring (base 5.0, min 7.0–8.0 per strategy)
+
+```
++ Price inside zone:          +0.5 to +1.5
++ HTF 4H aligned:             +1.5
++ Cross-strategy confluence:   +1.0 to +2.0
++ Volume spike 1.5x+:         +0.5 to +1.0
++ Structural level:           +0.5
++ 2+ confluence bonus:        +0.5 to +1.0
 ```
 
-### 4. Jalankan
+## S3 Upgraded Thresholds (More Entries)
+
+- FVG lookback: 6 candles (tighter)
+- FVG min ATR: 25% (was 30%)
+- Imbalance min ATR: 40% (was 50%)
+- Displacement body: 50% (was 55%)
+- Displacement volume: 1.3x (was 1.5x)
+- Entry zone tolerance: 20% ATR (was 25%)
+- Inside-zone score bonus: +1.0 (was +0.5)
+
+## Files
+
+```
+config.py              — API keys, thresholds (gitignored)
+scanner.py             — main loop + all strategy scanners
+strategy1_liquidity.py — S1 zones + shared utilities
+strategy2_wick.py      — S2 wick detection
+strategy3_fvg.py       — S3 original FVG reclaim
+strategy3_fvg_imbalance.py — S3 upgraded (FVG + imbalance)
+strategy4_vpattern.py  — S4 original V pattern
+strategy4_orderblock.py — S4 upgraded (OB + breaker block)
+strategy5_engineered.py — S5 compression + engineered sweep
+strategy6_bos_mss.py   — S6 BOS + MSS + CHOCH
+risk_manager.py        — position sizing + 4 gate checks
+telegram_bot.py        — alerts (DETECTED disabled, only ENTRY)
+trade_tracker.py       — trades.json + winrate tracking
+core/signal_handler.py — unified Signal + Telegram delivery
+```
+
+## Telegram Alerts
+
+Only actionable alerts sent to Telegram:
+
+- `⚠️ TOUCH` — price hit S1 zone (no entry yet)
+- `✅ ENTRY [S1–S6]` — rejection confirmed, ready to trade
+- `✅ WIN / ❌ LOSS` — TP/SL hit automatically
+- `📊 WINRATE` — daily report
+
+## Git Push
 
 ```bash
-python3 -u scanner.py
+git add <files>    # don't add config.py
+git commit -m "..."
+source <(python3 -c "import config; print(f'PAT={config.GITHUB_PAT}')")
+git remote set-url origin https://jajajak12:${PAT}@github.com/jajajak12/Vortex.git
+git push origin main
+git remote set-url origin https://github.com/jajajak12/Vortex.git
 ```
 
-Background di VPS:
+## Phase 1 Status
 
-```bash
-python3 -u scanner.py > /tmp/scanner.log 2>&1 &
-tail -f /tmp/scanner.log
-```
-
----
-
-## Alert Telegram
-
-| Alert | Strategi | Keterangan |
-|-------|----------|------------|
-| ⚠️ TOUCH | S1 | Harga memasuki zona liquidity |
-| ✅ [S1] ENTRY SIGNAL | S1 | Rejection confirmed + searah HTF |
-| 🕯️ [S2] WICK DETECTED | S2 | Long wick terdeteksi (LONG downside / SHORT upside) |
-| ✅ [S2] WICK FILL ENTRY | S2 | Harga masuk entry zone + rejection 5m |
-| 🔷 [S3] FVG SETUP | S3 | Liquidity sweep + FVG terdeteksi |
-| ✅ [S3] FVG ENTRY | S3 | Harga retrace ke FVG + rejection 5m |
-| 📐 [S4] V PATTERN | S4 | V-Bottom / V-Top terdeteksi (4H/1D) |
-| ✅ [S4] V PATTERN ENTRY | S4 | Harga di entry zone + rejection 30m |
-| ✅/❌ [Sx] WIN/LOSS | Semua | Hasil trade setelah hit TP atau SL |
-| 📊 WINRATE | Semua | Laporan harian (sekali per hari) — total + breakdown per strategi |
-
----
-
-## File Structure
-
-```
-├── config.py              # Kredensial & parameter (gitignored, jangan di-push)
-├── scanner.py             # Main loop — VortexScanner class, 3 strategi per pair
-├── strategy1_liquidity.py # S1: Liquidity Grab + shared utilities (ATR, candles, zones)
-├── strategy2_wick.py      # S2: Wick Fill (1W/1D/4H)
-├── strategy3_fvg.py       # S3: FVG Reclaim after Liquidity Sweep
-├── risk_manager.py        # RiskManager: position sizing + 4 risk gates
-├── telegram_bot.py        # Alert S1 + stats
-├── wick_alerts.py         # Alert S2
-├── fvg_alerts.py          # Alert S3
-├── strategy4_vpattern.py  # S4: V Pattern Sharp Reversal (4H+1D, entry 30m)
-├── vpattern_alerts.py     # Alert S4
-├── trade_tracker.py       # Catat sinyal, monitor TP/SL, winrate + per-strategy breakdown
-├── trades.json            # Data hasil tracking (auto-generated, auto-trimmed 500 entries)
-└── requirements.txt
-```
-
----
-
-## Catatan
-
-- Binance API hanya butuh permission **Read Info** — tidak ada trading otomatis
-- `config.py` di-gitignore, jangan pernah di-push ke repo
-- BTC macro (EMA200 1W) di-cache 1 jam — tidak fetch API tiap cycle
-- `trades.json` otomatis trim ke 500 closed trades terbaru setiap hari
-- Startup warmup: wick & FVG yang sudah ada di-seed ke `_seen_wick`/`_seen_fvg` (permanent set) saat launch — alert "DETECTED" hanya fire sekali per wick candle unik, tidak blast ulang setelah cooldown expire
-- Sedang dalam fase **paper trading** — observasi winrate sebelum real trade
-- Target winrate >45-50% sebelum pertimbangkan real trade
+Paper trading 13 pairs. Target: winrate >45–50% before Phase 2 automation.
