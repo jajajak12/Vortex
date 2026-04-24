@@ -44,13 +44,14 @@ S5_TF_ENTRY   = "30m"
 
 COMP_MAX_ATR    = 0.50   # Compression max width
 COMP_TIGHT_ATR  = 0.30   # Tight compression bonus threshold
+COMP_MIN_CANDLES = 5     # Compression must span at least 5 candles (institutional accumulation)
 SWEEP_LOOKBACK  = 10
-DISP_BODY_MIN   = 0.50   # EXPERIMENT 1H_AGGRESSIVE: lowered from 0.55
+DISP_BODY_MIN   = 0.55   # tightened from 0.50 (back to original pre-experiment)
 DISP_VOL_MIN    = 1.5
-RECOVERY_MIN    = 0.60   # EXPERIMENT: reclaim must retrace 60% of sweep distance (was implicit 100%)
+RECOVERY_MIN    = 0.60   # reclaim must retrace 60% of sweep distance (body close, not wick)
 
 S5_BASE_SCORE   = 5.0
-S5_MIN_SCORE    = 7.5
+S5_MIN_SCORE    = 8.0    # raised from 7.5 — standardize with S4/S6
 S5_SCORE_HIGH   = 9.0
 
 TP1_MAX_RR      = 3.0
@@ -81,6 +82,8 @@ def _detect_compression(candles_4h: list[dict], atr: float) -> list[dict]:
     n = len(candles_4h)
 
     for lookback in [6, 8, 10]:
+        if lookback < COMP_MIN_CANDLES:
+            continue  # enforce minimum compression duration
         for i in range(n - lookback):
             chunk = candles_4h[i:i + lookback]
             if len(chunk) < lookback:

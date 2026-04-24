@@ -73,14 +73,31 @@ def send_telegram(message: str):
 # ── Data Loading ────────────────────────────────────────────────────────────
 
 def load_trades(path: Path) -> list[dict]:
+    """Load trades — SQLite-first, fallback ke JSON jika DB belum ada."""
+    db_path = path.with_suffix(".db")
+    if db_path.exists():
+        try:
+            import sqlite3
+            con = sqlite3.connect(db_path, timeout=10)
+            con.row_factory = sqlite3.Row
+            rows = con.execute(
+                "SELECT * FROM trades WHERE status='CLOSED' ORDER BY time DESC"
+            ).fetchall()
+            con.close()
+            return [dict(r) for r in rows]
+        except Exception as e:
+            log.warning(f"SQLite read failed, fallback JSON: {e}")
+
+    # Fallback: JSON (legacy atau trades.json.migrated tidak ada)
+    json_path = path if path.exists() else path.with_suffix(".json.migrated")
     try:
-        with open(path, "r", encoding="utf-8") as f:
+        with open(json_path, "r", encoding="utf-8") as f:
             data = json.load(f)
-        if isinstance(data, dict):
-            return data.get("trades", [])
-        return data
+        closed = [t for t in (data if isinstance(data, list) else data.get("trades", []))
+                  if t.get("status") == "CLOSED"]
+        return closed
     except (FileNotFoundError, json.JSONDecodeError) as e:
-        log.error(f"trades.json error: {e}")
+        log.error(f"load_trades error: {e}")
         return []
 
 

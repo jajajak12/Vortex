@@ -14,6 +14,7 @@ Position size formula (spot & futures):
   margin_usdt   = position_usdt / leverage  ← hanya relevan untuk futures
 """
 
+import threading
 from dataclasses import dataclass
 from datetime import datetime
 from typing import Optional
@@ -52,13 +53,14 @@ class RiskCheck:
 class RiskManager:
     """
     Singleton — diinstansiasi sekali di VortexScanner.
-    Thread-safety tidak diperlukan karena scanner berjalan single-thread.
+    Thread-safe: Lock melindungi evaluate+on_trade_opened agar atomic. (P3.2)
     """
 
     def __init__(self):
         self._daily_risk_used:  float = 0.0
         self._open_trade_count: int   = 0
         self._last_reset_date:  str   = ""
+        self._lock = threading.Lock()
 
     # ── Internal helpers ──────────────────────────────────────
 
@@ -83,7 +85,7 @@ class RiskManager:
         setup: TradeSetup,
         balance: float = ACCOUNT_BALANCE,
         leverage: int  = 1,
-    ) -> RiskCheck:
+    ) -> "RiskCheck":
         """
         Validasi setup dan hitung position size.
 
@@ -95,6 +97,13 @@ class RiskManager:
         Returns:
             RiskCheck dengan approved=True jika semua gate terpenuhi.
         """
+        with self._lock:
+            return self._evaluate_locked(setup, balance, leverage)
+
+    def _evaluate_locked(
+        self, setup: TradeSetup, balance: float, leverage: int
+    ) -> "RiskCheck":
+        """Called inside lock — evaluate + commit atomically."""
         self._auto_reset()
 
         sl_dist = abs(setup.entry - setup.sl)
@@ -155,13 +164,15 @@ class RiskManager:
         )
 
     def on_trade_opened(self, risk_pct: float = RISK_PCT_DEFAULT):
-        """Panggil setelah trade berhasil di-log."""
-        self._daily_risk_used  += risk_pct
-        self._open_trade_count += 1
+        """Panggil setelah trade berhasil di-log. Thread-safe via lock."""
+        with self._lock:
+            self._daily_risk_used  += risk_pct
+            self._open_trade_count += 1
 
     def on_trade_closed(self):
-        """Panggil setiap kali trade closed (WIN/LOSS)."""
-        self._open_trade_count = max(0, self._open_trade_count - 1)
+        """Panggil setiap kali trade closed (WIN/LOSS). Thread-safe via lock."""
+        with self._lock:
+            self._open_trade_count = max(0, self._open_trade_count - 1)
 
     # ── Status ────────────────────────────────────────────────
 

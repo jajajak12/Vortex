@@ -41,17 +41,23 @@ _PAIR_TAGS = {
 }
 
 _cache: list | None = None
+_cache_mtime: float = 0.0
 
 
 def _load_lessons() -> list:
-    global _cache
-    if _cache is not None:
-        return _cache
+    """Load lessons dengan mtime-based cache invalidation.
+    Auto-reload jika lessons.json diupdate oleh daily_analysis.
+    """
+    global _cache, _cache_mtime
     if not LESSONS_FILE.exists():
         _cache = []
         return _cache
+    mtime = LESSONS_FILE.stat().st_mtime
+    if _cache is not None and mtime <= _cache_mtime:
+        return _cache  # file belum berubah
     with open(LESSONS_FILE) as f:
         _cache = json.load(f)
+    _cache_mtime = mtime
     return _cache
 
 
@@ -140,6 +146,37 @@ def inject_lessons_to_context(
 
     lines.append("")
     return "\n".join(lines)
+
+
+def get_score_modifier(
+    strategy_id: str,
+    pair: str = "",
+    direction: str = "",
+) -> float:
+    """
+    Return score delta berdasarkan lessons yang relevan.
+    Dipanggil oleh scanner sebelum weight gate — memodifikasi base_score.
+
+    AVOID   → -0.5 per lesson (cap -1.5)
+    PREFER  → +0.3 per lesson (cap +0.9)
+    DIRECTIONAL → +0.2 jika arah cocok, -0.2 jika berlawanan
+    """
+    lessons = get_relevant_lessons(strategy_id, pair, max_lessons=3)
+    delta = 0.0
+    for lesson in lessons:
+        ltype = lesson.get("type", "").upper()
+        if ltype == "AVOID":
+            delta -= 0.5
+        elif ltype == "PREFER":
+            delta += 0.3
+        elif ltype == "DIRECTIONAL" and direction:
+            desc = lesson.get("description", "").upper()
+            if direction.upper() in desc:
+                delta += 0.2
+            elif ("LONG" in desc and direction == "SHORT") or \
+                 ("SHORT" in desc and direction == "LONG"):
+                delta -= 0.2
+    return max(-1.5, min(0.9, round(delta, 2)))
 
 
 def lessons_summary() -> str:

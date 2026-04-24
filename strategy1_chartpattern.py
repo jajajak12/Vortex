@@ -39,8 +39,9 @@ S1_TF_ENTRY   = "30m"
 
 # ── Pattern thresholds ────────────────────────────────────────
 MIN_TOUCHES       = 3        # min touches per trendline
-BREAKOUT_BODY_MIN = 0.60     # candle body / range ≥ 60%
-BREAKOUT_VOL_MIN  = 1.5      # volume ≥ 1.5x avg
+BREAKOUT_BODY_MIN = 0.65     # tightened from 0.60
+BREAKOUT_VOL_MIN  = 2.0      # tightened from 1.5 — false breakouts rarely have 2x volume
+BREAKOUT_MAX_AGE  = 15       # breakout candle must be within last 15 candles (recency filter)
 
 # ── Scoring ─────────────────────────────────────────────────
 S1_BASE_SCORE  = 5.5
@@ -584,6 +585,10 @@ def scan_chart_patterns(
         d = p["direction"]
         lo, hi = p["zone_low"], p["zone_high"]
         mid = p["zone_mid"]
+
+        # Recency filter: breakout must be within last BREAKOUT_MAX_AGE candles
+        if (n - 1) - p.get("break_idx", 0) > BREAKOUT_MAX_AGE:
+            continue
 
         # Pattern must align with HTF bias
         if ENABLE_MACRO_FILTER := True:  # injected from config via closure

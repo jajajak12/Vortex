@@ -18,6 +18,12 @@ client = Client(BINANCE_API_KEY, BINANCE_API_SECRET)
 _candle_cache: dict[str, tuple[float, list]] = {}
 _CACHE_TTL = 55  # detik — sedikit di bawah scan interval 60s
 
+# ── Circuit breaker — suspend pair_tf setelah berulang failure ─
+# Key: "{pair}_{tf}" → {"failures": int, "open_until": float}
+_circuit: dict[str, dict] = {}
+_CB_FAIL_THRESHOLD = 3    # consecutive failures sebelum circuit terbuka
+_CB_COOLDOWN_SECS  = 300  # 5 menit suspended sebelum retry
+
 # ── Timeframe mapping ────────────────────────────────────────
 TF_MAP = {
     "5m":  Client.KLINE_INTERVAL_5MINUTE,
@@ -32,15 +38,26 @@ TF_MAP = {
 def get_candles(pair: str, tf: str, limit: int = 100) -> list[dict]:
     """
     Ambil data OHLCV dari Binance.
-    - TTL cache 55s: duplicate call dalam satu scan cycle return data yang sama (no extra API hit).
-    - Retry 2×: backoff 0.5s / 1s jika Binance timeout atau rate-limit.
+    - TTL cache 55s: duplicate call dalam satu scan cycle return data yang sama.
+    - Retry 3×: backoff 0.5s / 1s / 2s jika Binance timeout atau rate-limit.
+    - Circuit breaker: setelah 3 consecutive failure, pair_tf di-suspend 5 menit.
     """
-    key = f"{pair}_{tf}_{limit}"
-    now = _time.time()
+    key    = f"{pair}_{tf}_{limit}"
+    cb_key = f"{pair}_{tf}"
+    now    = _time.time()
+
+    # ── Circuit breaker: skip jika circuit terbuka ───────────────
+    cb = _circuit.get(cb_key)
+    if cb and cb["open_until"] > now:
+        remaining = int(cb["open_until"] - now)
+        raise Exception(f"[CB] Circuit open: {cb_key} — retry in {remaining}s")
+
+    # ── Cache hit ─────────────────────────────────────────────────
     cached = _candle_cache.get(key)
     if cached and now - cached[0] < _CACHE_TTL:
         return cached[1]
 
+    # ── Fetch dari Binance (3 attempt) ───────────────────────────
     last_exc: Exception | None = None
     for attempt in range(3):
         try:
@@ -56,12 +73,26 @@ def get_candles(pair: str, tf: str, limit: int = 100) -> list[dict]:
                 for c in raw
             ]
             _candle_cache[key] = (now, candles)
+            # Reset circuit breaker saat sukses
+            if cb_key in _circuit:
+                _circuit[cb_key] = {"failures": 0, "open_until": 0.0}
             return candles
         except Exception as e:
             last_exc = e
             if attempt < 2:
                 _time.sleep(0.5 * (attempt + 1))
 
+    # ── Semua retry gagal: update circuit breaker ────────────────
+    entry = _circuit.get(cb_key, {"failures": 0, "open_until": 0.0})
+    entry["failures"] += 1
+    if entry["failures"] >= _CB_FAIL_THRESHOLD:
+        entry["open_until"] = now + _CB_COOLDOWN_SECS
+        try:
+            from telegram_bot import alert_info
+            alert_info(f"⚠️ [CIRCUIT OPEN] Binance API {cb_key} suspended 5min ({entry['failures']} failures)")
+        except Exception:
+            pass
+    _circuit[cb_key] = entry
     raise last_exc  # type: ignore[misc]
 
 def calculate_atr(candles: list[dict], period: int = ATR_PERIOD) -> float:

@@ -45,26 +45,26 @@ S3_TF_DETECT  = "4h"
 S3_TF_CONFIRM = "1h"
 S3_TF_ENTRY   = "30m"
 
-# FVG — UPGRADED for more entries
-FVG_LOOKBACK   = 6        # UPGRADED: tighter window (was 8)
+# FVG — TIGHTENED
+FVG_LOOKBACK   = 20       # age filter: only last 20 candles (was 6 — too recent, small window)
 FVG_TOUCH_LOOK = 20
-FVG_MIN_ATR    = 0.25    # EXPERIMENT 1H_AGGRESSIVE: lowered from 0.30 (was 0.30 → now 0.25)
+FVG_MIN_ATR    = 0.40     # tightened from 0.25 — micro-FVG is noise
 
-# Imbalance — UPGRADED
-IMBALANCE_MIN_ATR  = 0.40   # UPGRADED: lower (was 0.50)
-IMBALANCE_LOOKBACK = 6
+# Imbalance — TIGHTENED
+IMBALANCE_MIN_ATR  = 0.55   # tightened from 0.40 (was 0.50 → 0.40 → now 0.55)
+IMBALANCE_LOOKBACK = 20      # same age filter as FVG
 
 # Entry
 RETECT_TOLERANCE = 0.004   # Price must be inside zone
-ENTRY_ATR_ZONE   = 0.20    # UPGRADED: tighter (was 0.25)
+ENTRY_ATR_ZONE   = 0.20
 
-# Displacement (HARD GATE) — lowered to catch more setups
-DISP_BODY_MIN    = 0.50    # UPGRADED: lower (was 0.55)
-DISP_VOL_MIN     = 1.3     # UPGRADED: lower (was 1.5)
+# Displacement (HARD GATE) — tightened
+DISP_BODY_MIN    = 0.55    # tightened from 0.50 (was 0.55 → 0.50 → back to 0.55)
+DISP_VOL_MIN     = 1.5     # tightened from 1.3
 
-# Score — base 5.0, min 7.0 for signal
+# Score — base 5.0, min 7.5 for signal (raised from 7.0)
 S3_BASE_SCORE = 5.0
-S3_MIN_SCORE  = 7.0
+S3_MIN_SCORE  = 7.5
 S3_SCORE_HIGH = 9.0
 
 # TP
@@ -308,7 +308,7 @@ def _compute_score(
     if htf_bullish or htf_bearish:
         score += 1.5
     if has_s2:
-        score += 2.0
+        score += 1.0   # tightened from 2.0 — was artificially inflating scores
     if has_s5:
         score += 1.5
     if vol_confirmed:
@@ -411,7 +411,9 @@ def scan_fvg_imbalance(
             valid_gaps.append(gap)
 
     # HTF bias
-    htf_bullish, htf_bearish = _compute_htf_bias(candles_4h)
+    _htf = _compute_htf_bias(candles_4h)
+    htf_bullish = _htf == "LONG"
+    htf_bearish = _htf == "SHORT"
 
     for gap in valid_gaps:
         direction  = gap["direction"]

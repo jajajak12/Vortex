@@ -2,3 +2,10 @@ config.py
 venv/
 __pycache__/
 *.pyc
+
+.env
+trades.json.corrupt
+trades.json.tmp
+trades.db
+logs/
+vortex/
