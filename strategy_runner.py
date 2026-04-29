@@ -165,6 +165,7 @@ def scan_s1(ctx: PairContext, state: ScanState, current_price: float):
             reason = (f"Fresh {valid_dir} liquidity zone "
                       f"${zone['low']:.4f}–${zone['high']:.4f}. "
                       f"False breakout 5m{vol_note} confirmed, close kembali di dalam zona.")
+            state.cd_entry.set(ckey)
             state.signal_handler.send_alert(Signal(
                 strategy_id="S1", symbol=ctx.pair, direction=valid_dir, timeframe="30m",
                 entry_price=trade["entry"], sl_price=trade["sl"], tp1_price=trade["tp"],
@@ -177,7 +178,6 @@ def scan_s1(ctx: PairContext, state: ScanState, current_price: float):
                        position_usdt=risk.position_usdt, rr=risk.rr_ratio)
             state.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
             state.rate_mon.track(ctx.pair)
-            state.cd_entry.set(ckey)
 
     except Exception as e:
         log.error(f"[S1 ERROR] {ctx.pair}: {e}", exc_info=True)
@@ -237,6 +237,7 @@ def scan_s1_chart(ctx: PairContext, state: ScanState, current_price: float):
                       f"Breakout on 1H with {setup['vol_ratio']:.1f}x volume. "
                       f"Entry at broken channel {direction}.")
             inv = zone_low if direction == "LONG" else zone_high
+            state.cd_entry.set(ckey)
             state.signal_handler.send_alert(Signal(
                 strategy_id="S1-CHART", symbol=ctx.pair, direction=direction, timeframe="30m",
                 entry_price=entry, sl_price=sl, tp1_price=tp1, tp2_price=tp2,
@@ -249,7 +250,6 @@ def scan_s1_chart(ctx: PairContext, state: ScanState, current_price: float):
                        position_usdt=risk.position_usdt, rr=risk.rr_ratio)
             state.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
             state.rate_mon.track(ctx.pair)
-            state.cd_entry.set(ckey)
 
     except Exception as e:
         log.error(f"[S1-CHART ERROR] {ctx.pair}: {e}", exc_info=True)
@@ -307,6 +307,7 @@ def scan_s2(ctx: PairContext, state: ScanState):
             reason_s2 = (f"{setup['tf_label']} wick {setup['wick']['wick_body_ratio']}x body{ema_note}. "
                          f"Price di fill zone, rejection 5m confirmed.")
             inv_s2 = w["wick_low"] if direction == "LONG" else w["wick_high"]
+            state.cd_wick_e.set(wk)
             state.signal_handler.send_alert(Signal(
                 strategy_id="S2", symbol=ctx.pair, direction=direction,
                 timeframe=setup["tf_label"], entry_price=t["entry"],
@@ -320,7 +321,6 @@ def scan_s2(ctx: PairContext, state: ScanState):
                        position_usdt=risk.position_usdt, rr=risk.rr_ratio)
             state.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
             state.rate_mon.track(ctx.pair)
-            state.cd_wick_e.set(wk)
 
     except Exception as e:
         log.error(f"[S2 ERROR] {ctx.pair}: {e}", exc_info=True)
@@ -375,6 +375,7 @@ def scan_s3_imbal(ctx: PairContext, state: ScanState):
             reason = (f"{setup['type']} {direction} "
                       f"${setup['fvg']['fvg_low']:.4f}–${setup['fvg']['fvg_high']:.4f}. "
                       f"Reclaim + wick rejection {wick_rej['tf']} confirmed{conf_note}.")
+            state.cd_fvg_e.set(fk)
             state.signal_handler.send_alert(Signal(
                 strategy_id="S3", symbol=ctx.pair, direction=direction,
                 timeframe=setup["tf_label"], entry_price=t["entry"],
@@ -388,7 +389,6 @@ def scan_s3_imbal(ctx: PairContext, state: ScanState):
                        strategy="S3", position_usdt=risk.position_usdt, rr=risk.rr_ratio)
             state.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
             state.rate_mon.track(ctx.pair)
-            state.cd_fvg_e.set(fk)
 
     except Exception as e:
         log.error(f"[S3_IMBAL ERROR] {ctx.pair}: {e}", exc_info=True)
@@ -487,6 +487,9 @@ def scan_s4_ob_bos(ctx: PairContext, state: ScanState):
                 reason = (f"{ob_type} {direction}: break of ${break_lvl:.4f}."
                           f"{mss_note}{choch_note}")
 
+            # Set cooldowns before send_alert — prevents re-fire if log_signal throws
+            state.cd_ob_e.set(setup["zone_key"])
+            state.cd_ob_e.set(pair_cd_key)
             state.signal_handler.send_alert(Signal(
                 strategy_id=f"S4-{mode}", symbol=ctx.pair, direction=direction,
                 timeframe=setup["tf_label"], entry_price=t["entry"],
@@ -501,8 +504,6 @@ def scan_s4_ob_bos(ctx: PairContext, state: ScanState):
                        rr=risk.rr_ratio)
             state.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
             state.rate_mon.track(ctx.pair)
-            state.cd_ob_e.set(setup["zone_key"])
-            state.cd_ob_e.set(pair_cd_key)  # block this pair for 4h
             break  # one signal per pair per scan cycle
 
     except Exception as e:
@@ -550,6 +551,7 @@ def scan_s5_eng(ctx: PairContext, state: ScanState):
                      f"@ {t['entry']} | Score={base_score} RR={risk.rr_ratio} Size=${risk.position_usdt}")
             reason = (f"{setup['type']} {direction} at "
                       f"${zone['zone_low']:.4f}–${zone['zone_high']:.4f}. Compression sweep + reclaim.")
+            state.cd_eng_e.set(setup["zone_key"])
             state.signal_handler.send_alert(Signal(
                 strategy_id="S5", symbol=ctx.pair, direction=direction,
                 timeframe=setup["tf_label"], entry_price=t["entry"],
@@ -563,7 +565,6 @@ def scan_s5_eng(ctx: PairContext, state: ScanState):
                        strategy="S5", position_usdt=risk.position_usdt, rr=risk.rr_ratio)
             state.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
             state.rate_mon.track(ctx.pair)
-            state.cd_eng_e.set(setup["zone_key"])
 
     except Exception as e:
         log.error(f"[S5_ENG ERROR] {ctx.pair}: {e}", exc_info=True)
@@ -640,6 +641,7 @@ def scan_s6_ema(ctx: PairContext, state: ScanState):
             )
             inv = setup["zone_low"] if direction == "LONG" else setup["zone_high"]
 
+            state.cd_ob_e.set(setup["zone_key"])
             state.signal_handler.send_alert(Signal(
                 strategy_id="S6", symbol=ctx.pair, direction=direction,
                 timeframe="4H", entry_price=t["entry"],
@@ -654,7 +656,6 @@ def scan_s6_ema(ctx: PairContext, state: ScanState):
                        rr=risk.rr_ratio)
             state.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
             state.rate_mon.track(ctx.pair)
-            state.cd_ob_e.set(setup["zone_key"])
 
     except Exception as e:
         log.error(f"[S6_EMA ERROR] {ctx.pair}: {e}", exc_info=True)
