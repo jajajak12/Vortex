@@ -130,7 +130,7 @@ def _detect_fvg(candles_4h: list[dict], atr: float) -> list[dict]:
     results = []
     n = len(candles_4h)
 
-    for i in range(2, min(n - 1, FVG_LOOKBACK + 2)):
+    for i in range(max(2, n - FVG_LOOKBACK), n - 1):
         c1 = candles_4h[i - 2]
         c2 = candles_4h[i - 1]
         c3 = candles_4h[i]
@@ -198,7 +198,7 @@ def _detect_imbalance(candles_4h: list[dict], atr: float) -> list[dict]:
     results = []
     n = len(candles_4h)
 
-    for i in range(1, min(n - 1, IMBALANCE_LOOKBACK + 1)):
+    for i in range(max(1, n - IMBALANCE_LOOKBACK), n - 1):
         c1 = candles_4h[i - 1]
         c2 = candles_4h[i]
 
@@ -249,7 +249,7 @@ def _detect_imbalance(candles_4h: list[dict], atr: float) -> list[dict]:
 def _check_wick_rejection(
     direction: str,
     zone_price: float,
-    candles_30m: list[dict],
+    pair: str,
 ) -> dict | None:
     """
     Check for wick rejection at zone on 30m candles.
@@ -257,7 +257,7 @@ def _check_wick_rejection(
     """
     for tf in ("30m", "15m", "5m"):
         try:
-            candles_tf = get_candles(candles_30m[0]["symbol"], tf, limit=20)
+            candles_tf = get_candles(pair, tf, limit=20)
         except Exception:
             continue
         if len(candles_tf) < 2:
@@ -478,7 +478,7 @@ def scan_fvg_imbalance(
             "has_s5_confluence": has_s5,
             "vol_confirmed":     gap["vol_confirmed"],
             "vol_ratio":         gap["vol_ratio"],
-            "wick_rejection":    _check_wick_rejection(direction, zone_price, candles_4h) if in_zone else None,
+            "wick_rejection":    _check_wick_rejection(direction, zone_price, pair) if in_zone else None,
             "confidence_score":  sc["score"],
             "confidence_label":  sc["label"],
         })

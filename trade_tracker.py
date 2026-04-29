@@ -6,6 +6,12 @@ Interface identical to old JSON version — scanner.py needs no changes.
 import time
 from datetime import datetime
 
+# Entry TF per strategy — used for candles_to_resolve granularity
+_STRATEGY_TF_MINUTES: dict[str, int] = {
+    "S1": 5, "S1-CHART": 30, "S2": 5, "S3": 30,
+    "S4-RETEST": 30, "S4-MOMENTUM": 30, "S5": 30, "S6": 30,
+}
+
 import db
 from vortex_logger import get_logger
 
@@ -58,32 +64,38 @@ def update_trades_for_pair(pair: str, current_price: float,
     check_low  = candle_low  if candle_low  > 0 else current_price
 
     for t in open_trades:
-        result = None
+        result      = None
+        close_price = current_price
         if t["direction"] == "LONG":
             if check_high >= t["tp"]:
-                result = "WIN"
+                result      = "WIN"
+                close_price = t["tp"]
             elif check_low <= t["sl"]:
-                result = "LOSS"
+                result      = "LOSS"
+                close_price = t["sl"]
         else:  # SHORT
             if check_low <= t["tp"]:
-                result = "WIN"
+                result      = "WIN"
+                close_price = t["tp"]
             elif check_high >= t["sl"]:
-                result = "LOSS"
+                result      = "LOSS"
+                close_price = t["sl"]
 
         if result:
-            open_time   = datetime.strptime(t["time"], "%Y-%m-%d %H:%M:%S")
-            close_dt    = datetime.now()
+            open_time    = datetime.strptime(t["time"], "%Y-%m-%d %H:%M:%S")
+            close_dt     = datetime.now()
             minutes_open = int((close_dt - open_time).total_seconds() / 60)
-            candles_res  = minutes_open // 5  # dalam 5m candles
+            tf_min       = _STRATEGY_TF_MINUTES.get(t.get("strategy", "S1"), 5)
+            candles_res  = max(1, minutes_open // tf_min)
 
             close_time_str = close_dt.strftime("%Y-%m-%d %H:%M:%S")
-            db.close_trade(t["id"], result, current_price, close_time_str, candles_res)
+            db.close_trade(t["id"], result, close_price, close_time_str, candles_res)
 
             closed_trade = dict(t)
             closed_trade.update({
                 "status":             "CLOSED",
                 "result":             result,
-                "close_price":        current_price,
+                "close_price":        close_price,
                 "close_time":         close_time_str,
                 "candles_to_resolve": candles_res,
             })

@@ -13,19 +13,21 @@ Bobot dipakai di scanner.py:
 
 import json
 import os
+import threading
 from pathlib import Path
 
 WEIGHTS_FILE = Path("/home/prospera/vortex/weights.json")
 
 # Bobot awal semua strategi
 DEFAULT_WEIGHTS = {
-    "S1-LIQ":   1.0,
-    "S1-CHART": 1.0,
-    "S2":       1.0,
-    "S3":       1.0,
-    "S4":       1.0,
-    "S5":       1.0,
-    "S6":       1.0,
+    "S1":          1.0,
+    "S1-CHART":    1.0,
+    "S2":          1.0,
+    "S3":          1.0,
+    "S4-RETEST":   1.0,
+    "S4-MOMENTUM": 1.0,
+    "S5":          1.0,
+    "S6":          1.0,
 }
 
 WEIGHT_MIN  = 0.3
@@ -38,6 +40,7 @@ FALSE_DELTA = -0.20
 MIN_ACCEPTED_SCORE = 7.0
 
 _cache: dict | None = None
+_weights_lock = threading.Lock()
 
 
 def _load() -> dict:
@@ -94,22 +97,23 @@ def update_weight(strategy_id: str, result: str) -> float:
     result: "WIN" | "LOSS" | "FALSE_SIGNAL"
     Return bobot baru.
     """
-    w = _load()
-    current = w.get(strategy_id, 1.0)
+    with _weights_lock:
+        w = dict(_load())  # copy — do not mutate shared _cache directly
+        current = w.get(strategy_id, 1.0)
 
-    if result == "WIN":
-        delta = WIN_DELTA
-    elif result == "LOSS":
-        delta = LOSS_DELTA
-    elif result == "FALSE_SIGNAL":
-        delta = FALSE_DELTA
-    else:
-        return current
+        if result == "WIN":
+            delta = WIN_DELTA
+        elif result == "LOSS":
+            delta = LOSS_DELTA
+        elif result == "FALSE_SIGNAL":
+            delta = FALSE_DELTA
+        else:
+            return current
 
-    new_weight = max(WEIGHT_MIN, min(WEIGHT_MAX, current + delta))
-    w[strategy_id] = round(new_weight, 4)
-    _save(w)
-    return new_weight
+        new_weight = max(WEIGHT_MIN, min(WEIGHT_MAX, current + delta))
+        w[strategy_id] = round(new_weight, 4)
+        _save(w)
+        return new_weight
 
 
 def update_from_closed_trade(trade: dict) -> float | None:

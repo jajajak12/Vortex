@@ -259,7 +259,9 @@ def scan_engineered(
     n     = len(c4)
 
     avg_v = _avg_vol(c4)
-    htf_bull, htf_bear = _compute_htf_bias(c4)
+    _htf = _compute_htf_bias(c4)
+    htf_bull = _htf == "LONG"
+    htf_bear = _htf == "SHORT"
 
     # Detect both compression and engineered sweep
     comps  = _detect_compression(c4, atr)

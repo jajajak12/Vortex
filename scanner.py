@@ -183,11 +183,11 @@ class VortexScanner:
     def _scan_pair(self, pair: str, btc_macro: str):
         """Full scan for one pair — monitor + all 6 strategies. Thread-safe."""
         try:
-            candles_30m    = get_candles(pair, "30m", limit=5)
+            candles_30m    = get_candles(pair, "30m", limit=100)
             last           = candles_30m[-1]
             current_price  = last["close"]
-            candle_high     = last["high"]
-            candle_low      = last["low"]
+            candle_high    = last["high"]
+            candle_low     = last["low"]
         except Exception as e:
             log.error(f"[PRICE ERROR] {pair}: {e}")
             return
@@ -200,6 +200,9 @@ class VortexScanner:
 
     def scan_once(self, btc_macro: str):
         self.risk_mgr.sync_open_count(get_stats()["open"])
+        # Reset seen_ob each cycle — cooldowns (cd_ob_e) already prevent re-signals
+        with self.state._ob_lock:
+            self.state.seen_ob.clear()
         active_pairs = [p for p in CRYPTO_PAIRS if self._is_trading_session(p)]
 
         # Warm candle cache in parallel (I/O bound)

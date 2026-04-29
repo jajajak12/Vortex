@@ -152,6 +152,11 @@ def scan_s1(ctx: PairContext, state: ScanState, current_price: float):
 
             vol     = rejection.get("volume_spike", False)
             s1_score = 6.0 + (1.5 if vol else 0) + (1.0 if risk.rr_ratio >= 2.5 else 0.5 if risk.rr_ratio >= 2.0 else 0)
+
+            approved_w, _ = check_weight_gate(state, "S1", s1_score, ctx.pair, valid_dir)
+            if not approved_w:
+                continue
+
             vol_note = " dengan volume spike" if vol else ""
             log.info(f"✅ [S1] ENTRY: {ctx.pair} {valid_dir} | "
                      f"E={trade['entry']} SL={trade['sl']} TP={trade['tp']} "
@@ -330,7 +335,7 @@ def scan_s3_imbal(ctx: PairContext, state: ScanState):
         for setup in ctx.fvg_imbal_setups:
             base_score = setup["confidence_score"]
             approved, _ = check_weight_gate(state, "S3", base_score, ctx.pair)
-            if not approved or base_score < 7.0:
+            if not approved or base_score < 7.5:  # S3_MIN_SCORE
                 continue
 
             direction = setup["direction"]
@@ -420,10 +425,15 @@ def scan_s4_ob_bos(ctx: PairContext, state: ScanState):
             seen_ob=seen_ob_snapshot,
         )
 
-        strat_id = "S4"   # unified label for Darwinian weights
+        pair_cd_key = f"{ctx.pair}_S4"
+
+        if state.cd_ob_e.is_on_cooldown(pair_cd_key):
+            return
 
         for setup in setups:
             base_score = setup["confidence_score"]
+            mode     = setup["entry_mode"]          # "RETEST" or "MOMENTUM"
+            strat_id = f"S4-{mode}"                 # matches weight key + logged strategy
             approved, _ = check_weight_gate(state, strat_id, base_score, ctx.pair)
             if not approved:
                 continue
@@ -457,7 +467,6 @@ def scan_s4_ob_bos(ctx: PairContext, state: ScanState):
 
             state.ob_add(setup["zone_key"])   # thread-safe write → S5 skips
 
-            mode = setup["entry_mode"]
             ob_type = setup["type"]
             inv = ob["ob_low"] if direction == "LONG" else ob["ob_high"]
 
@@ -493,6 +502,8 @@ def scan_s4_ob_bos(ctx: PairContext, state: ScanState):
             state.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
             state.rate_mon.track(ctx.pair)
             state.cd_ob_e.set(setup["zone_key"])
+            state.cd_ob_e.set(pair_cd_key)  # block this pair for 4h
+            break  # one signal per pair per scan cycle
 
     except Exception as e:
         log.error(f"[S4_OB_BOS ERROR] {ctx.pair}: {e}", exc_info=True)

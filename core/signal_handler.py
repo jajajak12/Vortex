@@ -24,10 +24,14 @@ log = get_logger(__name__)
 # ── Constants ─────────────────────────────────────────────────────
 
 STRATEGY_LABELS: dict[str, str] = {
-    "S1": "Liquidity Grab",
-    "S2": "Wick Fill",
-    "S3": "FVG Reclaim",
-    "S4": "V Pattern",
+    "S1":          "Liquidity Grab",
+    "S1-CHART":    "Chart Pattern",
+    "S2":          "Wick Fill",
+    "S3":          "FVG Reclaim",
+    "S4-RETEST":   "Order Block Retest",
+    "S4-MOMENTUM": "BOS/CHOCH Momentum",
+    "S5":          "Engineered Liquidity",
+    "S6":          "EMA Stack",
 }
 
 SCORE_HIGH   = 7.5
@@ -116,7 +120,7 @@ class SignalHandler:
         Cap TP1/TP2 S4 ke batas realistis (in-place). Idempotent — aman dipanggil
         berkali-kali: original_rr hanya di-set pada pemanggilan pertama.
         """
-        if signal.strategy_id != "S4":
+        if not signal.strategy_id.startswith("S4"):
             return
 
         sl_dist = abs(signal.entry_price - signal.sl_price)
@@ -162,7 +166,7 @@ class SignalHandler:
         """
         base = round(max(1.0, min(10.0, signal.score)), 1)
 
-        if signal.strategy_id != "S4":
+        if not signal.strategy_id.startswith("S4"):
             return base
 
         orig_rr = self._s4_original_rr(signal)
@@ -181,15 +185,10 @@ class SignalHandler:
     def _min_score_for(self, signal: Signal) -> float:
         """
         Return minimum passing score per strategy.
-        S4: tiered threshold berdasarkan original_rr (sebelum TP di-cap).
+        S4-RETEST/MOMENTUM: flat 8.0 (strategy already gates at 8.0).
         """
-        if signal.strategy_id == "S4":
-            orig_rr = self._s4_original_rr(signal)
-            if orig_rr > 6.0:
-                return S4_MIN_SCORE_RR6   # 9.1
-            if orig_rr > 4.0:
-                return S4_MIN_SCORE_RR4   # 8.7
-            return S4_MIN_SCORE           # 7.8
+        if signal.strategy_id.startswith("S4"):
+            return 8.0
         return SCORE_MEDIUM
 
     def process_signals(

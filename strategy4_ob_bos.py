@@ -31,6 +31,7 @@ TF_LABEL   = {"4h": "4H", "1h": "1H", "30m": "30m"}
 OB_ATR_MIN    = 0.50   # min OB body size relative to ATR
 BB_ATR_MIN    = 0.60   # min BB size relative to ATR
 OB_TOUCH_LOOK = 30     # candles to check for prior touch
+OB_AGE_LIMIT  = 40     # max age of OB candle (~1 week of 4H data)
 
 # ── BOS / CHOCH thresholds ────────────────────────────────────
 BOS_LOOKBACK     = 8
@@ -108,7 +109,7 @@ def _detect_order_blocks(candles: list[dict], atr: float) -> list[dict]:
     avg_v = _avg_vol(candles)
     n = len(candles)
 
-    for i in range(3, n - 2):
+    for i in range(max(3, n - OB_AGE_LIMIT - 2), n - 2):
         c_ob  = candles[i]
         c_imp = candles[i + 1]
         c_pre = candles[i - 1]
