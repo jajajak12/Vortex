@@ -92,12 +92,26 @@ def _macro_ok(ctx: PairContext, direction: str) -> bool:
     return True
 
 
+def _already_open(pair: str, strategy_prefix: str, direction: str) -> bool:
+    """True if DB has an OPEN trade for this pair+strategy+direction. Persists across restarts."""
+    from db import get_open_trades
+    for t in get_open_trades(pair):
+        if t["strategy"].startswith(strategy_prefix) and t["direction"] == direction:
+            log.info(f"  🚫 [DEDUP] {pair} {strategy_prefix} {direction} already OPEN — skip")
+            return True
+    return False
+
+
 # ── S1: Fresh Liquidity Grab ──────────────────────────────────────────────────
 
 def scan_s1(ctx: PairContext, state: ScanState, current_price: float):
     if ctx.lesson_ctx:
         log.info(f"[S1] {ctx.pair} lessons: {ctx.lesson_ctx[:200]}")
     try:
+        pair_cd_key = f"{ctx.pair}_S1"
+        if state.cd_entry.is_on_cooldown(pair_cd_key):
+            return
+
         zones    = get_fresh_liquidity_zones(ctx.pair)
         htf_bias = zones["htf_bias"]
 
@@ -157,6 +171,9 @@ def scan_s1(ctx: PairContext, state: ScanState, current_price: float):
             if not approved_w:
                 continue
 
+            if _already_open(ctx.pair, "S1", valid_dir):
+                continue
+
             vol_note = " dengan volume spike" if vol else ""
             log.info(f"✅ [S1] ENTRY: {ctx.pair} {valid_dir} | "
                      f"E={trade['entry']} SL={trade['sl']} TP={trade['tp']} "
@@ -166,6 +183,7 @@ def scan_s1(ctx: PairContext, state: ScanState, current_price: float):
                       f"${zone['low']:.4f}–${zone['high']:.4f}. "
                       f"False breakout 5m{vol_note} confirmed, close kembali di dalam zona.")
             state.cd_entry.set(ckey)
+            state.cd_entry.set(pair_cd_key)
             state.signal_handler.send_alert(Signal(
                 strategy_id="S1", symbol=ctx.pair, direction=valid_dir, timeframe="30m",
                 entry_price=trade["entry"], sl_price=trade["sl"], tp1_price=trade["tp"],
@@ -178,6 +196,7 @@ def scan_s1(ctx: PairContext, state: ScanState, current_price: float):
                        position_usdt=risk.position_usdt, rr=risk.rr_ratio)
             state.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
             state.rate_mon.track(ctx.pair)
+            break  # one signal per pair per cycle
 
     except Exception as e:
         log.error(f"[S1 ERROR] {ctx.pair}: {e}", exc_info=True)
@@ -190,6 +209,9 @@ def scan_s1_chart(ctx: PairContext, state: ScanState, current_price: float):
         log.info(f"[S1-CHART] {ctx.pair} lessons: {ctx.lesson_ctx[:200]}")
     try:
         if not ctx.chart_setups:
+            return
+        pair_cd_key = f"{ctx.pair}_S1CHART"
+        if state.cd_entry.is_on_cooldown(pair_cd_key):
             return
         for setup in ctx.chart_setups:
             direction = setup["direction"]
@@ -231,6 +253,9 @@ def scan_s1_chart(ctx: PairContext, state: ScanState, current_price: float):
                 log.warning(f"⛔ [S1-CHART] RISK REJECTED: {ctx.pair} — {risk.reason}")
                 continue
 
+            if _already_open(ctx.pair, "S1", direction):
+                continue
+
             log.info(f"✅ [S1-CHART] ENTRY {direction}: {ctx.pair} {setup['pattern']} "
                      f"E={entry:.4f} SL={sl:.4f} TP1={tp1:.4f} RR={risk.rr_ratio:.1f} Score={score:.1f}")
             reason = (f"{setup['pattern']} confirmed on 4H. "
@@ -238,6 +263,7 @@ def scan_s1_chart(ctx: PairContext, state: ScanState, current_price: float):
                       f"Entry at broken channel {direction}.")
             inv = zone_low if direction == "LONG" else zone_high
             state.cd_entry.set(ckey)
+            state.cd_entry.set(pair_cd_key)
             state.signal_handler.send_alert(Signal(
                 strategy_id="S1-CHART", symbol=ctx.pair, direction=direction, timeframe="30m",
                 entry_price=entry, sl_price=sl, tp1_price=tp1, tp2_price=tp2,
@@ -250,6 +276,7 @@ def scan_s1_chart(ctx: PairContext, state: ScanState, current_price: float):
                        position_usdt=risk.position_usdt, rr=risk.rr_ratio)
             state.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
             state.rate_mon.track(ctx.pair)
+            break  # one signal per pair per cycle
 
     except Exception as e:
         log.error(f"[S1-CHART ERROR] {ctx.pair}: {e}", exc_info=True)
@@ -259,6 +286,9 @@ def scan_s1_chart(ctx: PairContext, state: ScanState, current_price: float):
 
 def scan_s2(ctx: PairContext, state: ScanState):
     try:
+        pair_cd_key = f"{ctx.pair}_S2"
+        if state.cd_wick_e.is_on_cooldown(pair_cd_key):
+            return
         for setup in ctx.wick_setups:
             direction = setup.get("direction", "LONG")
             w   = setup["wick"]
@@ -301,6 +331,9 @@ def scan_s2(ctx: PairContext, state: ScanState):
                 log.warning(f"⛔ [S2] RISK REJECTED: {ctx.pair} — {risk.reason}")
                 continue
 
+            if _already_open(ctx.pair, "S2", direction):
+                continue
+
             log.info(f"✅ [S2] WICK ENTRY {direction}: {ctx.pair} "
                      f"{setup['tf_label']} @ {setup['current_price']} Size=${risk.position_usdt}")
             ema_note  = " dekat EMA50" if setup["ema_info"]["has_confluence"] else ""
@@ -308,6 +341,7 @@ def scan_s2(ctx: PairContext, state: ScanState):
                          f"Price di fill zone, rejection 5m confirmed.")
             inv_s2 = w["wick_low"] if direction == "LONG" else w["wick_high"]
             state.cd_wick_e.set(wk)
+            state.cd_wick_e.set(pair_cd_key)
             state.signal_handler.send_alert(Signal(
                 strategy_id="S2", symbol=ctx.pair, direction=direction,
                 timeframe=setup["tf_label"], entry_price=t["entry"],
@@ -321,6 +355,7 @@ def scan_s2(ctx: PairContext, state: ScanState):
                        position_usdt=risk.position_usdt, rr=risk.rr_ratio)
             state.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
             state.rate_mon.track(ctx.pair)
+            break  # one signal per pair per cycle
 
     except Exception as e:
         log.error(f"[S2 ERROR] {ctx.pair}: {e}", exc_info=True)
@@ -332,6 +367,9 @@ def scan_s3_imbal(ctx: PairContext, state: ScanState):
     if ctx.lesson_ctx:
         log.info(f"[S3] {ctx.pair} lessons: {ctx.lesson_ctx[:200]}")
     try:
+        pair_cd_key = f"{ctx.pair}_S3"
+        if state.cd_fvg_e.is_on_cooldown(pair_cd_key):
+            return
         for setup in ctx.fvg_imbal_setups:
             base_score = setup["confidence_score"]
             approved, _ = check_weight_gate(state, "S3", base_score, ctx.pair)
@@ -365,6 +403,9 @@ def scan_s3_imbal(ctx: PairContext, state: ScanState):
                 log.warning(f"⛔ [S3] RISK REJECTED: {ctx.pair} — {risk.reason}")
                 continue
 
+            if _already_open(ctx.pair, "S3", direction):
+                continue
+
             conf_parts = (["S2"] if setup.get("has_s2_confluence") else []) + \
                          (["S5"] if setup.get("has_s5_confluence") else [])
             conf_note  = f" [{', '.join(conf_parts)}]" if conf_parts else ""
@@ -376,6 +417,7 @@ def scan_s3_imbal(ctx: PairContext, state: ScanState):
                       f"${setup['fvg']['fvg_low']:.4f}–${setup['fvg']['fvg_high']:.4f}. "
                       f"Reclaim + wick rejection {wick_rej['tf']} confirmed{conf_note}.")
             state.cd_fvg_e.set(fk)
+            state.cd_fvg_e.set(pair_cd_key)
             state.signal_handler.send_alert(Signal(
                 strategy_id="S3", symbol=ctx.pair, direction=direction,
                 timeframe=setup["tf_label"], entry_price=t["entry"],
@@ -389,6 +431,7 @@ def scan_s3_imbal(ctx: PairContext, state: ScanState):
                        strategy="S3", position_usdt=risk.position_usdt, rr=risk.rr_ratio)
             state.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
             state.rate_mon.track(ctx.pair)
+            break  # one signal per pair per cycle
 
     except Exception as e:
         log.error(f"[S3_IMBAL ERROR] {ctx.pair}: {e}", exc_info=True)
@@ -465,6 +508,9 @@ def scan_s4_ob_bos(ctx: PairContext, state: ScanState):
                 log.warning(f"⛔ [S4] RISK REJECTED: {ctx.pair} — {risk.reason}")
                 continue
 
+            if _already_open(ctx.pair, "S4", direction):
+                continue
+
             state.ob_add(setup["zone_key"])   # thread-safe write → S5 skips
 
             ob_type = setup["type"]
@@ -516,6 +562,9 @@ def scan_s5_eng(ctx: PairContext, state: ScanState):
     if ctx.lesson_ctx:
         log.info(f"[S5] {ctx.pair} lessons: {ctx.lesson_ctx[:200]}")
     try:
+        pair_cd_key = f"{ctx.pair}_S5"
+        if state.cd_eng_e.is_on_cooldown(pair_cd_key):
+            return
         for setup in ctx.eng_setups:
             base_score = setup["confidence_score"]
             approved, _ = check_weight_gate(state, "S5", base_score, ctx.pair)
@@ -545,6 +594,9 @@ def scan_s5_eng(ctx: PairContext, state: ScanState):
                 log.warning(f"⛔ [S5] RISK REJECTED: {ctx.pair} — {risk.reason}")
                 continue
 
+            if _already_open(ctx.pair, "S5", direction):
+                continue
+
             zone   = setup["zone"]
             inv    = zone["zone_low"] if direction == "LONG" else zone["zone_high"]
             log.info(f"✅ [S5] {setup['type']} {direction}: {ctx.pair} "
@@ -552,6 +604,7 @@ def scan_s5_eng(ctx: PairContext, state: ScanState):
             reason = (f"{setup['type']} {direction} at "
                       f"${zone['zone_low']:.4f}–${zone['zone_high']:.4f}. Compression sweep + reclaim.")
             state.cd_eng_e.set(setup["zone_key"])
+            state.cd_eng_e.set(pair_cd_key)
             state.signal_handler.send_alert(Signal(
                 strategy_id="S5", symbol=ctx.pair, direction=direction,
                 timeframe=setup["tf_label"], entry_price=t["entry"],
@@ -565,6 +618,7 @@ def scan_s5_eng(ctx: PairContext, state: ScanState):
                        strategy="S5", position_usdt=risk.position_usdt, rr=risk.rr_ratio)
             state.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
             state.rate_mon.track(ctx.pair)
+            break  # one signal per pair per cycle
 
     except Exception as e:
         log.error(f"[S5_ENG ERROR] {ctx.pair}: {e}", exc_info=True)
@@ -590,6 +644,10 @@ def scan_s6_ema(ctx: PairContext, state: ScanState):
             pass
 
         setups = scan_ema_stack(ctx.pair, s1_zones=s1_zones)
+
+        pair_cd_key = f"{ctx.pair}_S6"
+        if state.cd_ob_e.is_on_cooldown(pair_cd_key):
+            return
 
         for setup in setups:
             base_score = setup["confidence_score"]
@@ -622,6 +680,9 @@ def scan_s6_ema(ctx: PairContext, state: ScanState):
                 log.warning(f"⛔ [S6] RISK REJECTED: {ctx.pair} — {risk.reason}")
                 continue
 
+            if _already_open(ctx.pair, "S6", direction):
+                continue
+
             pb   = setup["pullback"]
             bn   = setup["bounce"]
             log.info(
@@ -642,6 +703,7 @@ def scan_s6_ema(ctx: PairContext, state: ScanState):
             inv = setup["zone_low"] if direction == "LONG" else setup["zone_high"]
 
             state.cd_ob_e.set(setup["zone_key"])
+            state.cd_ob_e.set(pair_cd_key)
             state.signal_handler.send_alert(Signal(
                 strategy_id="S6", symbol=ctx.pair, direction=direction,
                 timeframe="4H", entry_price=t["entry"],
@@ -656,6 +718,7 @@ def scan_s6_ema(ctx: PairContext, state: ScanState):
                        rr=risk.rr_ratio)
             state.risk_mgr.on_trade_opened(risk_pct=ctx.params["RISK_PCT"])
             state.rate_mon.track(ctx.pair)
+            break  # one signal per pair per cycle
 
     except Exception as e:
         log.error(f"[S6_EMA ERROR] {ctx.pair}: {e}", exc_info=True)

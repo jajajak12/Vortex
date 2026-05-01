@@ -38,10 +38,10 @@ from strategy1_liquidity import (
     _compute_htf_bias,
 )
 from strategy2_wick import is_long_downside_wick, is_long_upside_wick
-from config import ATR_PERIOD
+from config import ATR_PERIOD, TF_ZONE
 
 # ── S3 Thresholds (UPGRADED) ─────────────────────────────────
-S3_TF_DETECT  = "4h"
+S3_TF_DETECT  = TF_ZONE
 S3_TF_CONFIRM = "1h"
 S3_TF_ENTRY   = "30m"
 

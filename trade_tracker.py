@@ -111,3 +111,8 @@ def get_stats() -> dict:
 def trim_old_trades(keep_closed: int = 500):
     """No-op — SQLite tidak perlu trim. Data disimpan semua dengan index."""
     pass
+
+
+def reset_all_trades() -> int:
+    """Delete all trades from trades.db. Use for paper-trading resets."""
+    return db.reset_all_trades()

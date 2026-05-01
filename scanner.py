@@ -51,6 +51,8 @@ class VortexScanner:
         self._macro_cache_ttl: int = 1200  # refresh every 20 min
 
         self._warmup()
+        # Reset open count to trades.json reality (warmup may seed incorrect count)
+        self.risk_mgr.sync_open_count(get_stats()["open"])
 
     # ── Startup warmup ────────────────────────────────────────
 

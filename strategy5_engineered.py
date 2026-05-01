@@ -36,9 +36,9 @@ from strategy1_liquidity import (
     find_swing_lows, find_swing_highs,
     _compute_htf_bias,
 )
-from config import ATR_PERIOD
+from config import ATR_PERIOD, TF_ZONE
 
-S5_TF_DETECT = "4h"
+S5_TF_DETECT = TF_ZONE
 S5_TF_CONFIRM = "1h"
 S5_TF_ENTRY   = "30m"
 
@@ -101,9 +101,9 @@ def _detect_compression(candles_4h: list[dict], atr: float) -> list[dict]:
                     results.append({
                         "type":       "Compression",
                         "direction":  "LONG" if sweep_c["close"] > max(highs) else "SHORT",
-                        "comp_low":   round(min(lows), 4),
-                        "comp_high":  round(max(highs), 4),
-                        "comp_mid":   round((min(lows) + max(highs)) / 2, 4),
+                        "zone_low":   round(min(lows), 4),
+                        "zone_high":  round(max(highs), 4),
+                        "zone_mid":   round((min(lows) + max(highs)) / 2, 4),
                         "comp_size":  round(comp_range, 4),
                         "atr_pct":    round(comp_range / atr, 2),
                         "tight":      comp_range < atr * COMP_TIGHT_ATR,

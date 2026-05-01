@@ -18,15 +18,19 @@ CONFLUENCE_MEDIUM     = 2      # Score >= 2 = MEDIUM confluence
 WICK_TIMEFRAMES = ["1w", "1d", "4h"]
 
 TF_LABEL = {
-    "1w": "1W (Weekly)",
-    "1d": "1D (Daily)",
-    "4h": "4H",
+    "1w":  "1W (Weekly)",
+    "1d":  "1D (Daily)",
+    "4h":  "4H",
+    "1h":  "1H",
+    "30m": "30m",
 }
 
 TF_PRIORITY = {
-    "1w": "🔴 HIGH",
-    "1d": "🟡 MEDIUM",
-    "4h": "🟢 STANDARD",
+    "1w":  "🔴 HIGH",
+    "1d":  "🟡 MEDIUM",
+    "4h":  "🟢 STANDARD",
+    "1h":  "🟢 STANDARD",
+    "30m": "🟢 STANDARD",
 }
 
 def calculate_ema(prices: list[float], period: int) -> list[float]:

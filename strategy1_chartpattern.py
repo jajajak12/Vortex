@@ -252,8 +252,12 @@ def _detect_hs(candles_4h: list[dict], atr: float) -> list[dict]:
         if len(troughs) < 2:
             continue
 
-        neckline_low = max(t["price"] for t in troughs if t["index"] < head["index"])
-        neckline_high = min(t["price"] for t in troughs if t["index"] > head["index"])
+        before_head = [t for t in troughs if t["index"] < head["index"]]
+        after_head  = [t for t in troughs if t["index"] > head["index"]]
+        if not before_head or not after_head:
+            continue
+        neckline_low  = max(t["price"] for t in before_head)
+        neckline_high = min(t["price"] for t in after_head)
         neckline = (neckline_low + neckline_high) / 2
 
         # Neckline must be roughly horizontal (within 20% of ATR)
@@ -303,8 +307,12 @@ def _detect_hs(candles_4h: list[dict], atr: float) -> list[dict]:
         if len(peaks) < 2:
             continue
 
-        neckline_low = min(p["price"] for p in peaks if p["index"] < inv_head["index"])
-        neckline_high = max(p["price"] for p in peaks if p["index"] > inv_head["index"])
+        before_inv = [p for p in peaks if p["index"] < inv_head["index"]]
+        after_inv  = [p for p in peaks if p["index"] > inv_head["index"]]
+        if not before_inv or not after_inv:
+            continue
+        neckline_low  = min(p["price"] for p in before_inv)
+        neckline_high = max(p["price"] for p in after_inv)
         neckline = (neckline_low + neckline_high) / 2
 
         if abs(neckline_low - neckline_high) > atr * 0.20:
@@ -571,7 +579,9 @@ def scan_chart_patterns(
 
     sw_lo = find_swing_lows(c4, lookback=5)
     sw_hi = find_swing_highs(c4, lookback=5)
-    htf_bullish, htf_bearish = _compute_htf_bias(c4)
+    _htf = _compute_htf_bias(c4)
+    htf_bullish = _htf == "LONG"
+    htf_bearish = _htf == "SHORT"
 
     # ── Detect all patterns ──────────────────────────────────
     all_patterns = (

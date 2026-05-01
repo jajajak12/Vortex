@@ -70,6 +70,7 @@ def init_db():
     with _conn() as con:
         con.executescript(_SCHEMA)
     _migrate_from_json()
+    purge_duplicates()
 
 
 def _migrate_from_json():
@@ -113,6 +114,52 @@ def _migrate_from_json():
         log.error(f"[DB] Migration failed: {e}")
 
 
+# ── Deduplication ─────────────────────────────────────────────────────────────
+
+def purge_duplicates() -> int:
+    """Mark duplicate trades DUPLICATE. Keep earliest per (pair, strategy, direction, 10-min bucket).
+    Idempotent — safe to call on every startup."""
+    from datetime import datetime
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT id, pair, strategy, direction, time FROM trades "
+            "WHERE status != 'DUPLICATE' ORDER BY id ASC"
+        ).fetchall()
+
+    seen: dict = {}
+    to_mark: list[int] = []
+    for row in rows:
+        try:
+            t = datetime.strptime(row["time"], "%Y-%m-%d %H:%M:%S")
+        except Exception:
+            continue
+        bucket = int(t.timestamp() // 600)  # 10-min bucket
+        key = (row["pair"], row["strategy"] or "", row["direction"], bucket)
+        if key in seen:
+            to_mark.append(row["id"])
+        else:
+            seen[key] = row["id"]
+
+    if to_mark:
+        with _conn() as con:
+            con.executemany(
+                "UPDATE trades SET status='DUPLICATE' WHERE id=?",
+                [(i,) for i in to_mark],
+            )
+        log.warning(f"[DB] purge_duplicates: marked {len(to_mark)} trades DUPLICATE — ids={to_mark}")
+    return len(to_mark)
+
+
+# ── Reset ─────────────────────────────────────────────────────────────────────
+
+def reset_all_trades():
+    """Delete all rows from trades table. Use for paper-trading resets."""
+    with _conn() as con:
+        deleted = con.execute("DELETE FROM trades").rowcount
+    log.warning(f"[DB] reset_all_trades: {deleted} rows deleted from trades.db")
+    return deleted
+
+
 # ── Write operations ───────────────────────────────────────────────────────────
 
 def insert_trade(trade: dict) -> dict:
@@ -134,6 +181,24 @@ def insert_trade(trade: dict) -> dict:
             trade.get("position_usdt", 0),    trade.get("rr", 0),
             trade.get("candles_to_resolve"),
         ))
+        # Auto-dedup: if an OPEN trade for same pair+strategy+direction exists within last 10 min,
+        # this insertion is a duplicate — mark it immediately so it never enters stats or monitoring.
+        existing = con.execute("""
+            SELECT id FROM trades
+            WHERE pair=? AND strategy=? AND direction=?
+              AND status='OPEN' AND id != ?
+              AND (julianday('now') - julianday(time)) * 1440 < 10
+            ORDER BY id ASC LIMIT 1
+        """, (
+            trade["pair"], trade.get("strategy", ""), trade["direction"], trade["id"],
+        )).fetchone()
+        if existing:
+            con.execute("UPDATE trades SET status='DUPLICATE' WHERE id=?", (trade["id"],))
+            log.warning(
+                f"[DB] Duplicate trade {trade['id']} "
+                f"({trade['pair']} {trade.get('strategy')} {trade['direction']}) "
+                f"— parent={existing['id']}, marked DUPLICATE"
+            )
     return trade
 
 
@@ -176,6 +241,7 @@ def get_all_trades(limit: int = 0) -> list[dict]:
 
 
 def get_stats() -> dict:
+    # DUPLICATE trades are excluded from all counts — they never reach status='CLOSED'
     with _conn() as con:
         total_open = con.execute(
             "SELECT COUNT(*) FROM trades WHERE status='OPEN'"

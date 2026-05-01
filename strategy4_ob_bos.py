@@ -19,10 +19,10 @@ from strategy1_liquidity import (
     find_swing_lows, find_swing_highs,
     _compute_htf_bias,
 )
-from config import ATR_PERIOD
+from config import ATR_PERIOD, TF_ZONE
 
 # ── Timeframes ────────────────────────────────────────────────
-TF_DETECT  = "4h"
+TF_DETECT  = TF_ZONE
 TF_CONFIRM = "1h"
 TF_ENTRY   = "30m"
 TF_LABEL   = {"4h": "4H", "1h": "1H", "30m": "30m"}

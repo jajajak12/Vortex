@@ -34,10 +34,10 @@ _STRATEGY_TAGS = {
 
 # Pair-specific lessons
 _PAIR_TAGS = {
-    "SOLUSDT": ["SOL"],
-    "ETHUSDT": ["ETH"],
-    "BTCUSDT": ["BTC"],
-    "XAUUSDT": ["GOLD", "XAU"],
+    "SOLUSDT": ["SOLUSDT", "SOL"],
+    "ETHUSDT": ["ETHUSDT", "ETH"],
+    "BTCUSDT": ["BTCUSDT", "BTC"],
+    "XAUUSDT": ["XAUUSDT", "GOLD", "XAU"],
 }
 
 _cache: list | None = None
@@ -73,26 +73,47 @@ def _score_relevance(lesson: dict, strategy_id: str, pair: str = "") -> float:
 
     # Strategy match
     strat_tags = _STRATEGY_TAGS.get(strategy_id, [])
-    lesson_strats = [s.upper() for s in lesson.get("strategies", [])]
+    lesson_strats = [s.upper() for s in (lesson.get("strategies") or [])]
+    strategy_matched = False
     for tag in strat_tags:
         if tag in text or any(tag in ls for ls in lesson_strats):
             score += 0.4
+            strategy_matched = True
             break
 
     # Pair match
-    if pair:
-        pair_tags = _PAIR_TAGS.get(pair, [pair.replace("USDT", "").upper()])
-        for tag in pair_tags:
-            if tag in text:
-                score += 0.3
-                break
-
-    # Lesson type weight
+    pair_matched = False
     ltype = lesson.get("type", "").upper()
-    if ltype == "AVOID":
-        score += 0.2  # AVOID lessons always somewhat relevant
-    elif ltype == "PREFER":
-        score += 0.1
+    if pair:
+        # DIRECTIONAL lessons with no strategies field: extract explicit pair from
+        # description (first word before SHORT/LONG) — must match exactly.
+        # Prevents evidence text from leaking into wrong-pair scans.
+        if ltype == "DIRECTIONAL" and not lesson.get("strategies"):
+            m = re.search(r'\b([A-Z]{2,10}USDT)\b\s+(SHORT|LONG)', desc)
+            extracted_pair = m.group(1) if m else None
+            if extracted_pair != pair.upper():
+                return 0.0
+            pair_matched = True
+            score += 0.3
+        else:
+            pair_tags = _PAIR_TAGS.get(pair, [pair.replace("USDT", "").upper()])
+            for tag in pair_tags:
+                if re.search(r'\b' + re.escape(tag) + r'\b', text):
+                    score += 0.3
+                    pair_matched = True
+                    break
+
+    # Lesson type weight — only add if at least one anchor (strategy or pair) matched.
+    # Lessons with no strategy tag must have a pair match to get the type bonus;
+    # otherwise they'd leak into every strategy via the 0.2 AVOID bonus alone.
+    has_strategy_tag = bool(lesson.get("strategies"))
+    if strategy_matched or pair_matched or has_strategy_tag:
+        if ltype == "AVOID":
+            score += 0.2
+        elif ltype == "PREFER":
+            score += 0.1
+    elif score == 0.0:
+        return 0.0
 
     return min(score, 1.0)
 
@@ -170,11 +191,15 @@ def get_score_modifier(
         elif ltype == "PREFER":
             delta += 0.3
         elif ltype == "DIRECTIONAL" and direction:
-            desc = lesson.get("description", "").upper()
-            if direction.upper() in desc:
+            # Only apply if lesson is explicitly about this pair (not a different pair's lesson
+            # that happens to mention this pair in evidence)
+            lesson_desc = lesson.get("description", "").upper()
+            if pair and pair.upper() not in lesson_desc:
+                continue
+            if direction.upper() in lesson_desc:
                 delta += 0.2
-            elif ("LONG" in desc and direction == "SHORT") or \
-                 ("SHORT" in desc and direction == "LONG"):
+            elif ("LONG" in lesson_desc and direction == "SHORT") or \
+                 ("SHORT" in lesson_desc and direction == "LONG"):
                 delta -= 0.2
     return max(-1.5, min(0.9, round(delta, 2)))
 
