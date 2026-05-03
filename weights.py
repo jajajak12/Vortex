@@ -20,14 +20,12 @@ WEIGHTS_FILE = Path("/home/prospera/vortex/weights.json")
 
 # Bobot awal semua strategi
 DEFAULT_WEIGHTS = {
-    "S1":          1.0,
-    "S1-CHART":    1.0,
-    "S2":          1.0,
-    "S3":          1.0,
-    "S4-RETEST":   1.0,
-    "S4-MOMENTUM": 1.0,
-    "S5":          1.0,
-    "S6":          1.0,
+    "S1": 1.0,
+    "S2": 1.0,
+    "S3": 1.0,
+    "S4": 1.0,
+    "S5": 1.0,
+    "S6": 1.0,
 }
 
 WEIGHT_MIN  = 0.3

@@ -8,8 +8,12 @@ from datetime import datetime
 
 # Entry TF per strategy — used for candles_to_resolve granularity
 _STRATEGY_TF_MINUTES: dict[str, int] = {
-    "S1": 5, "S1-CHART": 30, "S2": 5, "S3": 30,
-    "S4-RETEST": 30, "S4-MOMENTUM": 30, "S5": 30, "S6": 30,
+    "S1": 30,
+    "S2": 30,
+    "S3": 60,
+    "S4": 240,
+    "S5": 240,
+    "S6": 240,
 }
 
 import db

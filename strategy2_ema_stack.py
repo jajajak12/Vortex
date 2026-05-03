@@ -1,8 +1,8 @@
 """
-Strategy 6: Multi-TF EMA Stack Momentum (S6-TREND)
+S2: S6 EMA Stack
 ===================================================
 Detection: 4H EMA20 touch | Confirmation: 1H bounce | Entry: 30m
-Min score: 8.0 | TP1 max 1:3.0 | TP2 max 1:4.8
+Min score: 8.0 | RR 1:2
 
 Edge: When 1W/1D/4H EMAs all align, pullback to 4H EMA20 = high-probability
 trend continuation. Trend-following to balance the reversal-heavy portfolio.
@@ -36,7 +36,7 @@ Confluence scoring (base 5.0):
 """
 
 import math
-from strategy1_liquidity import (
+from strategy_utils import (
     get_candles, calculate_atr,
     find_swing_lows, find_swing_highs,
 )
@@ -68,8 +68,8 @@ BOUNCE_VOL_HIGH  = 2.0    # ≥ 2x = bonus
 # ── Trade ─────────────────────────────────────────────────────
 SL_ATR_MULT = 1.5   # SL = EMA20 ± SL_ATR_MULT * ATR
 SL_BUFFER   = 0.003
-TP1_MAX_RR  = 3.0
-TP2_MAX_RR  = 4.8
+TP1_MAX_RR  = 2.0
+TP2_MAX_RR  = 2.0
 
 # ── Scoring ───────────────────────────────────────────────────
 BASE_SCORE = 5.0

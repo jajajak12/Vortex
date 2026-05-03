@@ -106,25 +106,25 @@ class ScanState:
     Thread-safe: masing-masing field sudah punya lock internal.
     """
     # Cooldown stores — satu per alert type
-    # cd_bos_e REMOVED: S6 merged into S4 (strategy4_ob_bos.py), uses cd_ob_e
+    # Shared S1-S6 entry cooldown store for setup-level signals.
     cd_touch:  CooldownStore = field(default_factory=CooldownStore)
     cd_entry:  CooldownStore = field(default_factory=CooldownStore)
     cd_wick_e: CooldownStore = field(default_factory=CooldownStore)
     cd_fvg_e:  CooldownStore = field(default_factory=CooldownStore)
-    cd_ob_e:   CooldownStore = field(default_factory=CooldownStore)  # S4+S6 merged
+    cd_ob_e:   CooldownStore = field(default_factory=CooldownStore)
     cd_eng_e:  CooldownStore = field(default_factory=CooldownStore)
 
     # Permanent seen sets (overlap prevention, keyed by pair+zone)
     seen_wick: set = field(default_factory=set)
     seen_fvg:  set = field(default_factory=set)
-    seen_ob:   set = field(default_factory=set)   # S4 writes → S5/S6 reads
+    seen_ob:   set = field(default_factory=set)
 
     # Shared services (thread-safe internally or stateless)
     signal_handler: object = None   # SignalHandler
     risk_mgr:       object = None   # RiskManager
     rate_mon: SignalRateMonitor = field(default_factory=SignalRateMonitor)
 
-    # Lock for seen_ob (S4 write + S5/S6 read atomicity)
+    # Lock for seen_ob compatibility with warmup and older callers.
     _ob_lock: threading.Lock = field(default_factory=threading.Lock)
 
     def ob_seen(self, key: str) -> bool:

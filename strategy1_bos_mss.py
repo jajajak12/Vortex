@@ -1,28 +1,18 @@
 """
-S4+S6 Merged: Order Block / Breaker Block + BOS / MSS / CHOCH
+S1: S4-MOMENTUM BOS+MSS
 =============================================================
 Detection: 4H | Confirmation: 1H | Entry: 30m
-Min score: 8.0 | TP1 max 1:3.0 | TP2 max 1:4.8
-
-Replaces strategy4_orderblock.py + strategy6_bos_mss.py.
-
-Entry modes:
-  RETEST   — OB/BB reactive retest (ex-S4): price returns to OB/BB zone
-  MOMENTUM — BOS/CHOCH momentum break (ex-S6): price breaks structure and holds
-
-Priority: same zone_key → RETEST preferred over MOMENTUM.
-S5 reads seen_ob to skip zones owned by this strategy.
+Min score: 8.0 | RR 1:1
 """
 
-from strategy1_liquidity import (
+from strategy_utils import (
     get_candles, calculate_atr,
     find_swing_lows, find_swing_highs,
-    _compute_htf_bias,
 )
-from config import ATR_PERIOD, TF_ZONE
+from config import ATR_PERIOD
 
 # ── Timeframes ────────────────────────────────────────────────
-TF_DETECT  = TF_ZONE
+TF_DETECT  = "4h"
 TF_CONFIRM = "1h"
 TF_ENTRY   = "30m"
 TF_LABEL   = {"4h": "4H", "1h": "1H", "30m": "30m"}
@@ -45,8 +35,8 @@ MIN_SCORE  = 8.0
 SCORE_HIGH = 9.5
 
 # ── Trade ─────────────────────────────────────────────────────
-TP1_MAX_RR = 3.0
-TP2_MAX_RR = 4.8
+TP1_MAX_RR = 1.0
+TP2_MAX_RR = 1.0
 SL_BUFFER  = 0.005
 
 
@@ -430,7 +420,7 @@ def _score(
 # MAIN SCAN
 # ═══════════════════════════════════════════════════════════════
 
-def scan_ob_bos(
+def scan_bos_mss(
     pair: str,
     s1_zones: dict | None = None,
     fvg_setups: list[dict] | None = None,
@@ -438,9 +428,8 @@ def scan_ob_bos(
     seen_ob: set | None = None,
 ) -> list[dict]:
     """
-    Unified S4+S6 scan: OB/BB reactive retests + BOS/CHOCH momentum breaks.
-    Same zone_key → RETEST wins over MOMENTUM.
-    seen_ob: zones already owned (skip them).
+    Scan BOS/CHOCH momentum breaks only. Retest order-block logic is retained
+    internally for history but not emitted by the redesigned S1.
     """
     s1_zones   = s1_zones   or {}
     fvg_setups = fvg_setups or []
@@ -459,22 +448,7 @@ def scan_ob_bos(
     sw_lo = find_swing_lows(c4, lookback=10)
     sw_hi = find_swing_highs(c4, lookback=10)
 
-    # Detect all raw setups
-    retest_raw   = _detect_order_blocks(c4, atr) + _detect_breaker_blocks(c4, atr)
     momentum_raw = _detect_bos(c4, atr) + _detect_choch(c4, atr)
-
-    # Filter RETEST: must have been touched AND price near/in zone
-    retest_valid = []
-    for ob in retest_raw:
-        d, lo, hi = ob["direction"], ob["ob_low"], ob["ob_high"]
-        mid = ob["ob_mid"]
-        touched   = _was_touched(c4, lo, hi, ob["ob_idx"])
-        in_zone   = _is_in_zone(price, lo, hi)
-        near_zone = abs(price - mid) / mid < 0.01
-        if not (touched and (in_zone or near_zone)):
-            continue
-        ob["in_zone"] = in_zone
-        retest_valid.append(ob)
 
     # Filter MOMENTUM: must be in zone
     momentum_valid = []
@@ -486,13 +460,11 @@ def scan_ob_bos(
         ob["in_zone"] = in_zone
         momentum_valid.append(ob)
 
-    # Merge, dedup by zone_key — RETEST wins
+    # Merge, dedup by zone_key
     by_key: dict[str, dict] = {}
-    for ob in retest_valid + momentum_valid:
+    for ob in momentum_valid:
         d, mid = ob["direction"], ob["ob_mid"]
         key = f"{pair}_{d}_{mid:.4f}"
-        if key in by_key and by_key[key]["entry_mode"] == "RETEST":
-            continue  # RETEST already claimed this zone
         by_key[key] = ob
 
     results = []

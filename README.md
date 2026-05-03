@@ -76,13 +76,13 @@ Overlapping zones → S4 fires first, S5/S6 skip via `_seen_ob` handshake.
 ```
 config.py              — API keys, thresholds (gitignored)
 scanner.py             — main loop + all strategy scanners
-strategy1_liquidity.py — S1 zones + shared utilities
-strategy2_wick.py      — S2 wick detection
-strategy3_fvg.py            # S3 original FVG reclaim
-strategy3_fvg_imbalance.py  # S3 upgraded (FVG + imbalance)
-strategy4_orderblock.py     # S4 (Order Block + Breaker Block)
-strategy5_engineered.py      # S5 compression + engineered sweep
-strategy6_bos_mss.py         # S6 BOS + MSS + CHOCH
+strategy_utils.py      — shared candle, ATR, swing, macro helpers
+strategy1_bos_mss.py   — S1 BOS+MSS momentum (RR 1:1)
+strategy2_ema_stack.py — S2 EMA stack (RR 1:2)
+strategy3_p10_swing.py — S3 P10 swing reversal (RR 1:1)
+strategy4_vol_surge_bear.py — S4 volume surge bear short (RR 1:2)
+strategy5_vol_impulse.py    — S5 volume impulse bull close-high (RR 1:2)
+strategy6_donchian_breakout.py — S6 50-period Donchian breakout long (RR 1:2)
 risk_manager.py        — position sizing + 4 gate checks
 telegram_bot.py        — alerts (DETECTED disabled, only ENTRY)
 trade_tracker.py       — trades.json + winrate tracking

@@ -25,10 +25,14 @@ tail -f /tmp/scanner.log
 
 ## File Structure
 - `config.py` — kredensial & parameter (di-.gitignore, JANGAN push)
-- `scanner.py` — main loop + VortexScanner class (warmup, session filter, 4 strategi)
-- `strategy1_liquidity.py` — S1 logic + shared utilities (candles, ATR, zones, rejection check)
-- `strategy2_wick.py` — S2 Wick Fill (1W/1D/4H, LONG & SHORT)
-- `strategy3_fvg.py` — S3 FVG Reclaim after Liquidity Sweep
+- `scanner.py` — main loop + VortexScanner class (warmup, session filter, 6 strategi)
+- `strategy_utils.py` — shared utilities (candles, ATR, swings, BTC macro)
+- `strategy1_bos_mss.py` — S1: S4-MOMENTUM BOS+MSS (RR 1:1)
+- `strategy2_ema_stack.py` — S2: S6 EMA Stack (RR 1:2)
+- `strategy3_p10_swing.py` — S3: S7 P10 Swing Reversal (RR 1:1)
+- `strategy4_vol_surge_bear.py` — S4: S8 Volume Surge Bear SHORT (RR 1:2)
+- `strategy5_vol_impulse.py` — S5: volume_impulse_bull_close_high LONG (RR 1:2, 4H)
+- `strategy6_donchian_breakout.py` — S6: donchian_breakout LONG 50-period (RR 1:2, 4H)
 - `risk_manager.py` — RiskManager: position sizing + 4 gate (RR, ATR SL, max open, daily risk)
 - `telegram_bot.py` / `wick_alerts.py` / `fvg_alerts.py` / `alerts/` — alert per strategi
 - `trade_tracker.py` — catat signal, monitor TP/SL, hitung winrate per strategi
@@ -40,16 +44,13 @@ XRPUSDT, ADAUSDT, AVAXUSDT, DOGEUSDT,
 DOTUSDT, LINKUSDT, MATICUSDT, ATOMUSDT,
 XAUUSDT (gold — session filter + own macro)
 
-## Strategi: Fresh Liquidity Grab + Rejection
-1. **Zone detection** (4H): cari swing high/low yang:
-   - Terbentuk ≥10 candle lalu (`is_fresh`)
-   - Belum pernah dikunjungi lagi setelah terbentuk (`is_mitigated` = False)
-2. **Touch alert** (30m): harga masuk range zona [low-buffer, high+buffer] — harus dalam range, bukan hanya satu sisi
-3. **Entry signal** (5m): false breakout — candle tembus zona lalu close kembali di dalam
-4. **Trade calc**:
-   - SL: tepat di luar batas zona itu sendiri (LONG: zone.low × 0.998 / SHORT: zone.high × 1.002)
-   - TP: 1:1 RR dari SL distance
-5. **Winrate tracking**: setiap signal dicatat di trades.json, monitor TP/SL hit otomatis, report ke Telegram setiap 60 scan (~1 jam)
+## Strategi Aktif
+1. S1 = S4-MOMENTUM BOS+MSS. 4H structure break/CHOCH momentum only. RR 1:1.
+2. S2 = S6 EMA Stack. 1W/1D/4H aligned, 4H EMA20 pullback, 1H bounce. RR 1:2.
+3. S3 = S7 P10 Swing Reversal. 1H 20-bar swing extreme + high volume + reversal body + London/NY session. RR 1:1.
+4. S4 = S8 Volume Surge Bear SHORT. 4H bearish volume surge near 50-bar high, close near low. RR 1:2.
+5. S5 = volume_impulse_bull_close_high LONG. 4H bullish impulse, high volume, close high in range. RR 1:2.
+6. S6 = donchian_breakout LONG 50-period. 4H close above prior 50-candle Donchian high. RR 1:2.
 
 ## Alert Telegram
 - ⚠️ TOUCH — harga menyentuh zona liquidity (S1)

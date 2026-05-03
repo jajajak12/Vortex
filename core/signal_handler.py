@@ -24,14 +24,12 @@ log = get_logger(__name__)
 # ── Constants ─────────────────────────────────────────────────────
 
 STRATEGY_LABELS: dict[str, str] = {
-    "S1":          "Liquidity Grab",
-    "S1-CHART":    "Chart Pattern",
-    "S2":          "Wick Fill",
-    "S3":          "FVG Reclaim",
-    "S4-RETEST":   "Order Block Retest",
-    "S4-MOMENTUM": "BOS/CHOCH Momentum",
-    "S5":          "Engineered Liquidity",
-    "S6":          "EMA Stack",
+    "S1": "S4-MOMENTUM BOS+MSS",
+    "S2": "S6 EMA Stack",
+    "S3": "S7 P10 Swing Reversal",
+    "S4": "S8 Volume Surge Bear SHORT",
+    "S5": "volume_impulse_bull_close_high LONG",
+    "S6": "donchian_breakout LONG 50-period",
 }
 
 SCORE_HIGH   = 7.5
@@ -185,7 +183,7 @@ class SignalHandler:
     def _min_score_for(self, signal: Signal) -> float:
         """
         Return minimum passing score per strategy.
-        S4-RETEST/MOMENTUM: flat 8.0 (strategy already gates at 8.0).
+        S4: flat 8.0 (strategy already gates at 8.0).
         """
         if signal.strategy_id.startswith("S4"):
             return 8.0

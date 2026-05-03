@@ -10,16 +10,7 @@ from config import (
     get_pair_params,
 )
 from scanner_utils import PairContext, ScanState, SignalRateMonitor
-from strategy1_liquidity import (
-    get_fresh_liquidity_zones, get_candles, get_btc_macro_regime,
-    is_touching_zone, check_rejection_long, check_rejection_short,
-    calculate_trade,
-)
-from strategy1_chartpattern import scan_chart_patterns as scan_chartpatterns
-from strategy2_wick import scan_wick_setups
-from strategy3_fvg_imbalance import scan_fvg_imbalance
-from strategy4_ob_bos import scan_ob_bos       # merged S4+S6
-from strategy5_engineered import scan_engineered
+from strategy_utils import get_candles, get_btc_macro_regime
 from telegram_bot import alert_result, alert_stats, alert_info
 from core.signal_handler import SignalHandler
 from trade_tracker import log_signal, update_trades_for_pair, get_stats, trim_old_trades
@@ -64,21 +55,23 @@ class VortexScanner:
         log.info("[WARMUP] Pre-scanning existing setups (suppressing launch alerts)...")
         for pair in CRYPTO_PAIRS:
             try:
-                for setup in scan_wick_setups(pair):
-                    direction = setup.get("direction", "LONG")
-                    w   = setup["wick"]
-                    ref = w.get("wick_low") or w.get("wick_high", 0)
-                    wk  = f"{pair}_{direction}_{setup['tf']}_{ref:.4f}"
-                    self.state.seen_wick.add(wk)
-                for setup in scan_fvg_imbalance(pair, wick_setups=[], engineered_setups=[]):
-                    direction = setup["direction"]
-                    fk = f"{pair}_{direction}_{setup['fvg']['fvg_low']:.4f}"
-                    self.state.seen_fvg.add(fk)
-                try:
-                    for setup in scan_ob_bos(pair):
+                from strategy1_bos_mss import scan_bos_mss
+                from strategy2_ema_stack import scan_ema_stack
+                from strategy3_p10_swing import scan_p10_swing
+                from strategy4_vol_surge_bear import scan_vol_surge_bear
+                from strategy5_vol_impulse import scan_vol_impulse
+                from strategy6_donchian_breakout import scan_donchian_breakout
+
+                for scanner in (
+                    scan_bos_mss,
+                    scan_ema_stack,
+                    scan_p10_swing,
+                    scan_vol_surge_bear,
+                    scan_vol_impulse,
+                    scan_donchian_breakout,
+                ):
+                    for setup in scanner(pair):
                         self.state.ob_add(setup["zone_key"])
-                except Exception:
-                    pass
             except Exception as e:
                 log.error(f"[WARMUP] {pair}: {e}")
         log.info(f"[WARMUP] Done — {len(CRYPTO_PAIRS)} pairs seeded.")
@@ -104,35 +97,11 @@ class VortexScanner:
     # ── Per-pair context ──────────────────────────────────────
 
     def _build_context(self, pair: str, btc_macro: str) -> PairContext:
-        try:
-            wick_setups = scan_wick_setups(pair)
-        except Exception as e:
-            log.error(f"[WICK INIT ERROR] {pair}: {e}")
-            wick_setups = []
-        try:
-            fvg_imbal_setups = scan_fvg_imbalance(pair, wick_setups=wick_setups, engineered_setups=[])
-        except Exception as e:
-            log.error(f"[FVG_IMBAL INIT ERROR] {pair}: {e}")
-            fvg_imbal_setups = []
-        try:
-            chart_setups = scan_chartpatterns(pair)
-        except Exception as e:
-            log.error(f"[CHART_PATTERN INIT ERROR] {pair}: {e}")
-            chart_setups = []
-        try:
-            eng_setups = scan_engineered(pair)
-        except Exception as e:
-            log.error(f"[ENG INIT ERROR] {pair}: {e}")
-            eng_setups = []
         lesson_ctx = inject_lessons_to_context("", pair)
         return PairContext(
             pair             = pair,
             btc_macro        = btc_macro,
             lesson_ctx       = lesson_ctx,
-            wick_setups      = wick_setups,
-            fvg_imbal_setups = fvg_imbal_setups,
-            chart_setups     = chart_setups,
-            eng_setups       = eng_setups,
             params           = get_pair_params(pair),
         )
 
@@ -196,6 +165,7 @@ class VortexScanner:
 
         self._monitor_trades(pair, current_price, candle_high, candle_low)
         ctx = self._build_context(pair, btc_macro)
+
         run_all_strategies(ctx, self.state, current_price)
 
     # ── Scan cycle ────────────────────────────────────────────
@@ -227,25 +197,23 @@ class VortexScanner:
         log.info("=" * 50)
         log.info(f"🤖 VORTEX — 6 Strategies | {len(CRYPTO_PAIRS)} pairs")
         log.info(f"⏱️  Interval: {SCAN_INTERVAL_SECONDS}s")
-        log.info(f"[1H AGGRESSIVE MODE] EXPERIMENT ACTIVE — TF_EXPERIMENT_MODE = 1H_AGGRESSIVE")
-        log.info(f"    Detect/Confirm: 1H | Entry: 15m | Thresholds loosened for 2-week trial")
+        log.info("[S1-S6 REDESIGN] Active strategy set from 2-cycle validation")
         log.info("=" * 50)
 
         alert_info(
-            f"🤖 Vortex AKTIF — 1H_AGGRESSIVE MODE (eksperimen 2 minggu)\n"
-            f"S1: Liquidity Grab + Chart Patterns\n"
-            f"S2: Wick Fill\n"
-            f"S3: FVG + Imbalance\n"
-            f"S4: Order Block + Breaker Block\n"
-            f"S5: Engineered Liquidity\n"
-            f"S6: BOS + MSS / CHOCH\n"
-            f"TF: Detect/Confirm=1H | Entry=15m\n"
+            f"🤖 Vortex AKTIF — S1-S6 redesign\n"
+            f"S1: S4-MOMENTUM BOS+MSS (RR 1:1)\n"
+            f"S2: S6 EMA Stack (RR 1:2)\n"
+            f"S3: S7 P10 Swing Reversal (RR 1:1)\n"
+            f"S4: S8 Volume Surge Bear SHORT (RR 1:2)\n"
+            f"S5: volume_impulse_bull_close_high LONG (RR 1:2, 4H)\n"
+            f"S6: donchian_breakout LONG 50-period (RR 1:2, 4H)\n"
             f"Pairs: {len(CRYPTO_PAIRS)} | Interval: {SCAN_INTERVAL_SECONDS}s"
         )
 
         while True:
             scan_start = time.time()
-            log.info("[1H AGGRESSIVE MODE] Scanning...")
+            log.info("[S1-S6] Scanning...")
 
             try:
                 now = time.time()

@@ -23,13 +23,12 @@ LESSONS_FILE = Path("/home/prospera/vortex/lessons.json")
 # Mapping strategi → keyword yang relevance-check
 # Strategi specific tags
 _STRATEGY_TAGS = {
-    "S1-LIQ":   ["S1", "LIQUIDITY", "LIQ", "ZONE", "GRAB"],
-    "S1-CHART": ["S1", "CHART", "PATTERN", "WEDGE", "FLAG", "BREAKOUT"],
-    "S2":       ["S2", "WICK", "REJECTION", "FILL"],
-    "S3":       ["S3", "FVG", "IMBALANCE", "FAIR_VALUE"],
-    "S4":       ["S4", "ORDER_BLOCK", "OB", "BREAKER"],
-    "S5":       ["S5", "ENGINEERED", "LIQUIDATION", "CLUSTER"],
-    "S6":       ["S6", "BOS", "MSS", "CHOC", "BREAK_STRUCTURE"],
+    "S1": ["S1", "BOS", "MSS", "CHOC", "BREAK_STRUCTURE", "MOMENTUM"],
+    "S2": ["S2", "EMA", "STACK", "PULLBACK", "TREND"],
+    "S3": ["S3", "P10", "SWING", "REVERSAL", "EXTREME"],
+    "S4": ["S4", "VOLUME", "SURGE", "BEAR", "SHORT"],
+    "S5": ["S5", "VOLUME", "IMPULSE", "BULL", "CLOSE_HIGH"],
+    "S6": ["S6", "DONCHIAN", "BREAKOUT", "LONG"],
 }
 
 # Pair-specific lessons
@@ -219,53 +218,40 @@ def lessons_summary() -> str:
 # ── Pre-canned prompts per strategy ─────────────────────────────────────────
 
 _PROMPT_TEMPLATES = {
-    "S1-LIQ": """[S1-LIQ CONTEXT]
-- Detect liquidity grab zones on 4H
-- Entry on 30m false breakout with wick rejection
-- SL tepat di luar zona (LONG: zone.low × 0.998, SHORT: zone.high × 1.002)
-- TP: 1:1 RR dari SL distance
-{LESSONS}""",
-
-    "S1-CHART": """[S1-CHART CONTEXT]
-- Rising/Falling Wedge, H&S, Inverse H&S, Bull/Bear Flag
-- Detection on 4H, confirmation on 1H, entry on 30m
-- Pattern harus ada displacement > 50% body确认
+    "S1": """[S1 CONTEXT]
+- S4-MOMENTUM BOS+MSS
+- Detection 4H, confirmation 1H, entry 30m
+- RR 1:1
 {LESSONS}""",
 
     "S2": """[S2 CONTEXT]
-- Wick Fill: price wicked beyond zone, returned inside
-- LONG: upside wick above zone.high → price closes back below zone.high
-- SHORT: downside wick below zone.low → price closes back above zone.low
-- TF: 1W/1D/4H detect, 1H confirm, 30m entry
+- S6 EMA Stack
+- 1W/1D/4H aligned, 4H EMA20 pullback, 1H bounce
+- RR 1:2
 {LESSONS}""",
 
     "S3": """[S3 CONTEXT]
-- FVG + Imbalance zones
-- Detection 4H, confirmation 1H, entry 30m
-- Mandatory wick rejection on 30m candle
-- Min score 7.0 for entry
+- S7 P10 Swing Reversal
+- 1H swing extreme + high volume + reversal candle
+- RR 1:1
 {LESSONS}""",
 
     "S4": """[S4 CONTEXT]
-- Order Block + Breaker Block
-- OB = 1-3 candle bullish body sebelum bearish move (bullish OB) / vice versa
-- Breaker = OB yang udah break dan retest
-- Mandatory wick rejection + displacement check
+- S8 Volume Surge Bear SHORT
+- 4H bearish volume surge near 50-bar high
+- RR 1:2
 {LESSONS}""",
 
     "S5": """[S5 CONTEXT]
-- Engineered Liquidity Reversal
-- Cek cluster liquidity di atas swing high / bawah swing low
-- Displacement harus > 50% body
-- Min 3T candle untuk displacement确认
+- volume_impulse_bull_close_high LONG
+- 4H bullish impulse, volume expansion, close near high
+- RR 1:2
 {LESSONS}""",
 
     "S6": """[S6 CONTEXT]
-- BOS + MSS / CHOCH
-- BOS = Break of Structure pada 4H/1H
-- MSS = Market Structure Shift (HH/HL break untuk bullish, LH/LL break untuk bearish)
-- CHOCH = Change of Character (retest + rejection setelah BOS)
-- Mandatory wick rejection, MSS hold minimal 3 candles
+- donchian_breakout LONG 50-period
+- 4H close above prior 50-candle Donchian high
+- RR 1:2
 {LESSONS}""",
 }
 
