@@ -1,6 +1,6 @@
 # Vortex Trading Agent
 
-AI-powered crypto scanner for Binance Spot — paper trading, 6 strategies.
+AI-powered crypto scanner for Binance Spot. Paper-trading scanner only, no auto-execution.
 
 ## Setup
 
@@ -12,64 +12,52 @@ python3 -u scanner.py > /tmp/vortex.log 2>&1 &
 tail -f /tmp/vortex.log
 ```
 
-## Strategies
+## Active Strategies
 
-| ID | Name | TF | Entry | Min Score | Description |
-|----|------|----|-------|-----------|-------------|
-| S1 | Liquidity Grab | 4H→30m | 30m | 6.0 | Fresh zone touch + 5m rejection |
-| S2 | Wick Fill | 4H→30m | 30m | 7.0 | Wick zone entry + 5m rejection |
-| S3 | FVG Reclaim | 4H→30m | 30m | 7.0 | FVG + Imbalance after sweep |
-| S4 | V Pattern | 4H→30m | 30m | 8.0 | V-bottom/V-top pattern |
-| S4 | Order Block | 4H→30m | 30m | 8.0 | OB + Breaker Block retest |
-| S5 | Engineered | 4H→30m | 30m | 7.5 | Compression + engineered sweep |
-| S6 | BOS + MSS | 4H→30m | 30m | 8.0 | Break of structure + MSS/CHOCH |
+Final S1-S6 mapping from 2-cycle backtest validation:
 
-## Strategy Ownership (Overlap Prevention)
-
-- **S4 (OB)**: owns REACTIVE RETESTS at broken structure
-- **S5 (Eng)**: owns COMPRESSION + ENGINEERED SWEEPS (aggressive)
-- **S6 (BOS)**: owns MOMENTUM BREAKS + HOLD (NOT reactive retests)
-
-Overlapping zones → S4 fires first, S5/S6 skip via `_seen_ob` handshake.
+| ID | Strategy | Direction | Base TF | RR | File |
+|----|----------|-----------|---------|----|------|
+| S1 | S4-MOMENTUM BOS+MSS | LONG/SHORT | 4H | 1:1 | `strategy1_bos_mss.py` |
+| S2 | S6 EMA Stack | LONG/SHORT | 4H | 1:2 | `strategy2_ema_stack.py` |
+| S3 | S7 P10 Swing Reversal | LONG/SHORT | 1H | 1:1 | `strategy3_p10_swing.py` |
+| S4 | S8 Volume Surge Bear SHORT | SHORT | 4H | 1:2 | `strategy4_vol_surge_bear.py` |
+| S5 | volume_impulse_bull_close_high | LONG | 4H | 1:2 | `strategy5_vol_impulse.py` |
+| S6 | donchian_breakout 50-period | LONG | 4H | 1:2 | `strategy6_donchian_breakout.py` |
 
 ## Detection Logic
 
 | Strategy | Detect | Confirm | Entry |
 |----------|--------|---------|-------|
-| S1 Liquidity | 4H swing zones | 1H zone touch | 30m false breakout |
-| S2 Wick | 4H wick | 1H zone in | 30m rejection |
-| S3 FVG | 4H FVG/imbalance | 1H in zone | 30m wick rejection |
-| S4 OB | 4H order block | 1H touched | 30m rejection |
-| S5 Eng | 4H compression | 1H sweep | 30m reclaim |
-| S6 BOS | 4H structure break | 1H hold | 30m displacement |
+| S1 BOS+MSS | 4H BOS/CHOCH momentum break | 4H holds beyond structure | 30m signal alert |
+| S2 EMA Stack | 1W/1D trend alignment + 4H EMA20 pullback | 1H bounce from EMA20 | 30m signal alert |
+| S3 P10 Swing | 1H 20-bar swing high/low touch | high-volume reversal candle in London/NY session | 1H close |
+| S4 Volume Surge Bear | 4H bearish surge near 50-bar high | volume/body/close-low filters | 4H close |
+| S5 Volume Impulse | 4H bullish impulse candle | volume expansion + close near high | 4H close |
+| S6 Donchian Breakout | 4H close above prior 50-candle high | volume filter | 4H close |
 
 ## Hard Gates
 
-- TP1 max 1:3.0, TP2 max 1:4.8 (all strategies)
-- Volume spike required for all entries
-- Wick rejection MANDATORY at 30m (S3, S4-OB, S5, S6)
-- Macro filter: skip opposite-BTC-regime setups
+- Each strategy uses its own validated minimum RR:
+  - S1: `1.0`
+  - S2: `2.0`
+  - S3: `1.0`
+  - S4: `2.0`
+  - S5: `2.0`
+  - S6: `2.0`
+- Weight gate: active strategy keys are `S1` through `S6`, all default `1.0`.
+- Risk manager checks minimum RR, ATR SL distance, max open trades, and daily risk.
+- Macro filter skips setups against BTC regime unless the pair is configured as own-macro.
 
-## Scoring (base 5.0, min 7.0–8.0 per strategy)
+## Scoring
 
-```
-+ Price inside zone:          +0.5 to +1.5
-+ HTF 4H aligned:             +1.5
-+ Cross-strategy confluence:   +1.0 to +2.0
-+ Volume spike 1.5x+:         +0.5 to +1.0
-+ Structural level:           +0.5
-+ 2+ confluence bonus:        +0.5 to +1.0
-```
+Each strategy emits a 1-10 confidence score. `strategy_runner.py` applies:
 
-## S3 Upgraded Thresholds (More Entries)
-
-- FVG lookback: 6 candles (tighter)
-- FVG min ATR: 25% (was 30%)
-- Imbalance min ATR: 40% (was 50%)
-- Displacement body: 50% (was 55%)
-- Displacement volume: 1.3x (was 1.5x)
-- Entry zone tolerance: 20% ATR (was 25%)
-- Inside-zone score bonus: +1.0 (was +0.5)
+- lesson score modifier
+- strategy weight gate
+- duplicate-open-trade check
+- setup cooldown
+- risk manager approval
 
 ## Files
 
@@ -93,10 +81,9 @@ core/signal_handler.py — unified Signal + Telegram delivery
 
 Only actionable alerts sent to Telegram:
 
-- `⚠️ TOUCH` — price hit S1 zone (no entry yet)
-- `✅ ENTRY [S1–S6]` — rejection confirmed, ready to trade
-- `✅ WIN / ❌ LOSS` — TP/SL hit automatically
-- `📊 WINRATE` — daily report
+- `ENTRY [S1-S6]` — setup approved by strategy, weight gate, and risk manager
+- `WIN / LOSS` — TP/SL hit automatically
+- `WINRATE` — daily report
 
 ## Git Push
 
