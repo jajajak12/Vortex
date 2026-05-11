@@ -1,6 +1,28 @@
 import requests
 from config import TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID
 
+SEP = "━━━━━━━━━━━━━━━━"
+
+
+def _fmt_price(value) -> str:
+    try:
+        value = float(value)
+    except (TypeError, ValueError):
+        return "-"
+    if value >= 1000:
+        return f"{value:,.2f}"
+    if value >= 1:
+        return f"{value:,.4f}"
+    return f"{value:.6f}"
+
+
+def _fmt_num(value, decimals: int = 2) -> str:
+    try:
+        return f"{float(value):,.{decimals}f}"
+    except (TypeError, ValueError):
+        return "-"
+
+
 def send_telegram(message: str):
     """Kirim pesan ke Telegram."""
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -12,8 +34,11 @@ def send_telegram(message: str):
     try:
         r = requests.post(url, json=payload, timeout=10)
         r.raise_for_status()
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else "unknown"
+        print(f"[TELEGRAM ERROR] HTTP {status}")
     except Exception as e:
-        print(f"[TELEGRAM ERROR] {e}")
+        print(f"[TELEGRAM ERROR] {type(e).__name__}: {e}")
 
 def alert_touch(pair: str, price: float, zone_low: float, zone_high: float, direction: str):
     """Alert 1: Harga menyentuh zona liquidity."""
@@ -54,18 +79,32 @@ def alert_entry(pair: str, direction: str, entry: float, sl: float, tp: float,
 
 def alert_result(trade: dict):
     """Alert hasil trade: WIN atau LOSS."""
-    emoji   = "✅ WIN" if trade["result"] == "WIN" else "❌ LOSS"
-    dir_em  = "🟢 LONG" if trade["direction"] == "LONG" else "🔴 SHORT"
-    strat   = trade.get("strategy", "?")
-    pnl_pct = abs(trade["close_price"] - trade["entry"]) / trade["entry"] * 100
+    result = trade.get("result", "?")
+    direction = trade.get("direction", "?")
+    status_emoji = "✅" if result == "WIN" else "❌"
+    dir_em = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
+    strat = trade.get("strategy") or "?"
+    entry = float(trade.get("entry") or 0)
+    close_price = float(trade.get("close_price") or 0)
+    sl = float(trade.get("sl") or 0)
+    tp = float(trade.get("tp") or 0)
+    pnl_pct = abs(close_price - entry) / entry * 100 if entry else 0
+    rr = trade.get("rr")
+    rr_line = f"RR plan  : 1:{_fmt_num(rr, 2)}\n" if rr else ""
+    candles = trade.get("candles_to_resolve")
+    held_line = f"Held     : {candles} candle\n" if candles else ""
     msg = (
-        f"{emoji} <b>[{strat}]</b> — <b>{trade['pair']}</b> {dir_em}\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"Entry      : ${trade['entry']:,.4f}\n"
-        f"Close      : ${trade['close_price']:,.4f} ({pnl_pct:.2f}%)\n"
-        f"SL / TP    : ${trade['sl']:,.4f} / ${trade['tp']:,.4f}\n"
-        f"Waktu open : {trade['time']}\n"
-        f"Waktu close: {trade['close_time']}"
+        f"{status_emoji} <b>TRADE CLOSED - {result}</b>\n"
+        f"{SEP}\n"
+        f"{dir_em}  <b>{trade.get('pair', '?')}</b>  |  {strat}\n"
+        f"Entry    : <b>${_fmt_price(entry)}</b>\n"
+        f"Close    : <b>${_fmt_price(close_price)}</b> ({pnl_pct:.2f}%)\n"
+        f"SL / TP  : ${_fmt_price(sl)} / ${_fmt_price(tp)}\n"
+        f"{rr_line}"
+        f"{held_line}"
+        f"{SEP}\n"
+        f"Open     : {trade.get('time', '-')}\n"
+        f"Close    : {trade.get('close_time', '-')}"
     )
     send_telegram(msg)
 
@@ -73,7 +112,13 @@ def alert_result(trade: dict):
 def alert_stats(stats: dict):
     """Kirim ringkasan winrate dengan breakdown per strategi."""
     if stats["total"] == 0:
-        send_telegram("📊 <b>Winrate Tracker</b>\nBelum ada trade selesai.")
+        send_telegram(
+            f"📊 <b>VORTEX TRADE STATS</b>\n"
+            f"{SEP}\n"
+            f"Closed : 0\n"
+            f"Open   : {stats.get('open', 0)}\n"
+            f"Status : history trade baru dimulai"
+        )
         return
     bar_filled = int(stats["winrate"] / 10)
     bar = "█" * bar_filled + "░" * (10 - bar_filled)
@@ -84,19 +129,19 @@ def alert_stats(stats: dict):
         if d["total"] > 0:
             strat_lines += (f"  [{s}] {d['wins']}W {d['losses']}L "
                             f"— WR {d['winrate']}%\n")
+    if not strat_lines:
+        strat_lines = "  belum ada closed trade\n"
 
     msg = (
-        f"📊 <b>WINRATE TRACKER</b>\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"Total closed : {stats['total']}\n"
-        f"Win          : {stats['wins']} ✅\n"
-        f"Loss         : {stats['losses']} ❌\n"
-        f"Winrate      : <b>{stats['winrate']}%</b>\n"
+        f"📊 <b>VORTEX TRADE STATS</b>\n"
+        f"{SEP}\n"
+        f"Closed   : {stats['total']}\n"
+        f"Win/Loss : {stats['wins']}W / {stats['losses']}L\n"
+        f"Winrate  : <b>{stats['winrate']}%</b>\n"
         f"[{bar}]\n"
-        f"Open trades  : {stats['open']}\n"
-        f"━━━━━━━━━━━━━━━\n"
-        f"Per Strategi:\n{strat_lines}"
-        f"━━━━━━━━━━━━━━━"
+        f"Open     : {stats['open']}\n"
+        f"{SEP}\n"
+        f"<b>Per Strategy</b>\n{strat_lines}"
     )
     send_telegram(msg)
 

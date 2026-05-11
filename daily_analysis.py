@@ -66,8 +66,11 @@ def send_telegram(message: str):
         r = requests.post(url, json=payload, timeout=10)
         r.raise_for_status()
         log.info("Telegram sent")
+    except requests.HTTPError as e:
+        status = e.response.status_code if e.response is not None else "unknown"
+        log.warning(f"Telegram failed: HTTP {status}")
     except Exception as e:
-        log.warning(f"Telegram failed: {e}")
+        log.warning(f"Telegram failed: {type(e).__name__}: {e}")
 
 
 # ── Data Loading ────────────────────────────────────────────────────────────

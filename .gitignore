@@ -9,3 +9,29 @@ trades.json.tmp
 trades.db
 logs/
 vortex/
+weights.json
+
+# Runtime / local state
+.env
+config.py
+trades.db
+weights.json
+lessons.json
+weights.jsonecho
+
+# Logs / cache
+logs/
+*.log
+cache/
+.cache/
+runtime/
+tmp/
+**/__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Generated reports / data
+analysis_reports/*.json
+historical_data/*.csv
+historical_data/__pycache__/

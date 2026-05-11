@@ -14,23 +14,16 @@ from __future__ import annotations
 
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
+from html import escape
 from typing import Optional
 
 from telegram_bot import send_telegram
+from strategy_metadata import get_strategy_meta
 from vortex_logger import get_logger
 
 log = get_logger(__name__)
 
 # ── Constants ─────────────────────────────────────────────────────
-
-STRATEGY_LABELS: dict[str, str] = {
-    "S1": "S4-MOMENTUM BOS+MSS",
-    "S2": "S6 EMA Stack",
-    "S3": "S7 P10 Swing Reversal",
-    "S4": "S8 Volume Surge Bear SHORT",
-    "S5": "volume_impulse_bull_close_high LONG",
-    "S6": "donchian_breakout LONG 50-period",
-}
 
 SCORE_HIGH   = 7.5
 SCORE_MEDIUM = 5.0
@@ -239,8 +232,10 @@ class SignalHandler:
 
         msg = self._format(signal, score)
         orig_rr = self._s4_original_rr(signal)
+        meta = get_strategy_meta(signal.strategy_id)
         log.info(
-            f"📤 [{signal.strategy_id}] {signal.symbol} {signal.direction} "
+            f"📤 [strategy={meta.strategy_id} name=\"{meta.strategy_name}\"] "
+            f"{signal.symbol} {signal.direction} "
             f"@ {signal.entry_price} | TF={signal.timeframe} | "
             f"Score={score} | RR={signal.rr}"
             + (f" (original {orig_rr})" if signal.strategy_id == "S4" else "")
@@ -250,8 +245,9 @@ class SignalHandler:
     # ── Private: formatting ───────────────────────────────────────
 
     def _format(self, s: Signal, score: float) -> str:
-        dir_emoji  = "🟢" if s.direction == "LONG" else "🔴"
-        strat_name = STRATEGY_LABELS.get(s.strategy_id, s.strategy_id)
+        meta = get_strategy_meta(s.strategy_id)
+        strat_name = escape(meta.strategy_name)
+        reason = escape(s.reason)
 
         if score >= SCORE_HIGH:
             score_label = "⭐⭐⭐ HIGH"
@@ -284,42 +280,51 @@ class SignalHandler:
                 f"  (+{tp2_pct:.2f}%)  RR 1:{tp2_rr}\n"
             )
 
-        risk_line = ""
-        if s.risk_percent > 0 or s.position_size > 0:
-            parts: list[str] = []
-            if s.risk_percent > 0:
-                parts.append(f"Risk {s.risk_percent:.1f}%")
-            if s.position_size > 0:
-                parts.append(f"Size ${s.position_size:,.2f}")
-            risk_line = "  │  ".join(parts) + "\n"
+        risk_line = f"Risk     : {s.risk_percent:.1f}%\n" if s.risk_percent > 0 else "Risk     : -\n"
+        size_line = f"Size     : ${s.position_size:,.2f}\n" if s.position_size > 0 else "Size     : -\n"
 
         inv_line = ""
         if s.invalidation_price is not None:
-            side     = "bawah" if s.direction == "LONG" else "atas"
             inv_line = (
-                f"\n⚠️ <i>Invalid jika close di {side} "
-                f"${fmt(s.invalidation_price)}</i>"
+                f"Invalid  : Close {'below' if s.direction == 'LONG' else 'above'} "
+                f"${fmt(s.invalidation_price)}\n"
             )
 
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
+        strategy_lines = (
+            f"Strategy : {meta.strategy_id} — {strat_name}\n"
+        )
+
+        if s.tp2_price is not None and round(s.tp2_price, 8) != round(s.tp1_price, 8):
+            tp_lines = (
+                f"TP1      : <b>${fmt(s.tp1_price)}</b>"
+                f"  (+{tp1_pct:.2f}%)  RR 1:{tp1_rr}\n"
+                f"{tp2_line}"
+            )
+        else:
+            tp_lines = (
+                f"TP       : <b>${fmt(s.tp1_price)}</b>"
+                f"  (+{tp1_pct:.2f}%)  RR 1:{tp1_rr}\n"
+            )
 
         return (
-            f"🌀 <b>VORTEX SIGNAL</b>\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"{dir_emoji} <b>{s.direction}</b>  │  <b>{s.symbol}</b>  │  {s.timeframe}\n"
-            f"Strategy : {s.strategy_id} — {strat_name}\n"
-            f"━━━━━━━━━━━━━━━\n"
+            f"🌀 <b>VORTEX ENTRY</b>\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"Pair      : <b>{s.symbol}</b>\n"
+            f"Direction : {s.direction}\n"
+            f"Timeframe : {s.timeframe}\n"
+            f"\n"
+            f"{strategy_lines}"
+            f"━━━━━━━━━━━━━━━━\n"
             f"Entry    : <b>${fmt(s.entry_price)}</b>\n"
             f"SL       : ${fmt(s.sl_price)}  (-{sl_pct:.2f}%)\n"
-            f"TP1      : <b>${fmt(s.tp1_price)}</b>"
-            f"  (+{tp1_pct:.2f}%)  RR 1:{tp1_rr}\n"
-            f"{tp2_line}"
-            f"━━━━━━━━━━━━━━━\n"
+            f"{tp_lines}"
+            f"━━━━━━━━━━━━━━━━\n"
             f"Score    : {score}/10  {score_label}\n"
             f"{risk_line}"
-            f"━━━━━━━━━━━━━━━\n"
-            f"📝 {s.reason}\n"
-            f"━━━━━━━━━━━━━━━\n"
-            f"🕐 {ts}"
+            f"{size_line}"
+            f"Time     : {ts}\n"
+            f"━━━━━━━━━━━━━━━━\n"
+            f"Reason   : {reason}\n"
             f"{inv_line}"
         )

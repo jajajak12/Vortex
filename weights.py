@@ -6,9 +6,17 @@ Setiap strategi punya bobot dinamis berdasarkan performa:
   - Loss         → weight -0.10  (min 0.3)
   - False signal → weight -0.20  (min 0.3)
 
-Bobot dipakai di scanner.py:
-  score_final = base_score × weight
-  if score_final < MIN_ACCEPTED_SCORE (6.0): reject signal
+Interpretasi bobot:
+  - weight tetap dipakai sebagai confidence multiplier
+  - multiplier boleh menaikkan score kuat
+  - multiplier tidak boleh membuat strategi tervalidasi menjadi mathematically unreachable
+
+Karena itu gate memakai:
+  weighted_score = base_score × weight
+  gate_score     = max(base_score, weighted_score)
+
+Dengan skema ini, weight > 1.0 tetap memberi upside, tapi weight < 1.0
+tidak bisa menurunkan setup di bawah raw/base score-nya sendiri.
 """
 
 import json
@@ -80,13 +88,20 @@ def get_adjusted_score(strategy_id: str, base_score: float) -> float:
     return base_score * get_weight(strategy_id)
 
 
-def apply_weight_gate(strategy_id: str, base_score: float) -> tuple[bool, float]:
+def apply_weight_gate(strategy_id: str, base_score: float) -> tuple[bool, float, float, float]:
     """
-    Return (approved, score_final).
-    Jika score_final < MIN_ACCEPTED_SCORE → reject (approved=False).
+    Return (approved, gate_score, weighted_score, weight).
+
+    weighted_score = base_score × weight
+    gate_score     = max(base_score, weighted_score)
+
+    Ini menjaga strategi tervalidasi tetap reachable walau bobot turun,
+    sambil tetap mempertahankan reward untuk bobot > 1.0.
     """
-    score_final = get_adjusted_score(strategy_id, base_score)
-    return score_final >= MIN_ACCEPTED_SCORE, score_final
+    weight = get_weight(strategy_id)
+    weighted_score = base_score * weight
+    gate_score = max(base_score, weighted_score)
+    return gate_score >= MIN_ACCEPTED_SCORE, gate_score, weighted_score, weight
 
 
 def update_weight(strategy_id: str, result: str) -> float:

@@ -5,18 +5,25 @@ PairContext, CooldownStore (thread-safe), SignalRateMonitor, ScanState.
 
 import threading
 import time
+from collections import Counter
 from dataclasses import dataclass, field
 from datetime import datetime
 from typing import Optional, TYPE_CHECKING
 
 from vortex_logger import get_logger
 from config import SIGNAL_RATE_MIN
+from strategy_metadata import get_strategy_meta
 
 if TYPE_CHECKING:
     from core.signal_handler import SignalHandler
     from risk_manager import RiskManager
 
 log = get_logger(__name__)
+
+STRATEGY_LABELS: dict[str, str] = {
+    sid: get_strategy_meta(sid).strategy_name
+    for sid in ("S1", "S2", "S3", "S4", "S5", "S6")
+}
 
 
 # ── Per-pair scan context ─────────────────────────────────────────────────────
@@ -96,6 +103,71 @@ class SignalRateMonitor:
             log.warning(f"[SIGNAL RATE] <{self.min_per_day} signal hari ini: {low}")
 
 
+@dataclass
+class StrategyDecision:
+    pair: str
+    strategy_id: str
+    strategy_name: str
+    legacy_label: str
+    evaluated: bool
+    raw_signal: bool
+    opened: bool = False
+    blocked_reason: str = ""
+    detail: str = ""
+
+
+class ScanDiagnostics:
+    """Thread-safe per-scan diagnostics collector."""
+
+    def __init__(self):
+        self._lock = threading.Lock()
+        self.evaluated_by_strategy: Counter[str] = Counter()
+        self.raw_signal_by_strategy: Counter[str] = Counter()
+        self.blocked_by_reason: Counter[str] = Counter()
+        self.opened_by_strategy: Counter[str] = Counter()
+        self.decisions: list[StrategyDecision] = []
+
+    def record(self, decision: StrategyDecision):
+        with self._lock:
+            self.decisions.append(decision)
+            if decision.evaluated:
+                self.evaluated_by_strategy[decision.strategy_id] += 1
+            if decision.raw_signal:
+                self.raw_signal_by_strategy[decision.strategy_id] += 1
+            if decision.opened:
+                self.opened_by_strategy[decision.strategy_id] += 1
+            elif decision.blocked_reason:
+                self.blocked_by_reason[decision.blocked_reason] += 1
+
+        status = "opened" if decision.opened else (
+            decision.blocked_reason or ("no_raw_signal" if not decision.raw_signal else "blocked")
+        )
+        detail = f" detail={decision.detail}" if decision.detail else ""
+        log.info(
+            "[DIAG] "
+            f"{decision.pair} "
+            f"strategy={decision.strategy_id} "
+            f"name=\"{decision.strategy_name}\" "
+            f"evaluated={'true' if decision.evaluated else 'false'} "
+            f"raw_signal={'true' if decision.raw_signal else 'false'} "
+            f"result={status}{detail}"
+        )
+
+    def log_summary(self):
+        def _fmt(counter: Counter[str]) -> str:
+            if not counter:
+                return "-"
+            return ", ".join(f"{k}={counter[k]}" for k in sorted(counter))
+
+        log.info(
+            "[DIAG SUMMARY] "
+            f"evaluated_by_strategy: {_fmt(self.evaluated_by_strategy)} | "
+            f"raw_signal_by_strategy: {_fmt(self.raw_signal_by_strategy)} | "
+            f"blocked_by_reason: {_fmt(self.blocked_by_reason)} | "
+            f"opened_by_strategy: {_fmt(self.opened_by_strategy)}"
+        )
+
+
 # ── Shared scan state (P1.1 + P3.2) ─────────────────────────────────────────
 
 @dataclass
@@ -123,6 +195,7 @@ class ScanState:
     signal_handler: object = None   # SignalHandler
     risk_mgr:       object = None   # RiskManager
     rate_mon: SignalRateMonitor = field(default_factory=SignalRateMonitor)
+    diagnostics: ScanDiagnostics = field(default_factory=ScanDiagnostics)
 
     # Lock for seen_ob compatibility with warmup and older callers.
     _ob_lock: threading.Lock = field(default_factory=threading.Lock)

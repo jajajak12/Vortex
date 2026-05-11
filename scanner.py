@@ -1,25 +1,42 @@
+import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from pathlib import Path
 from typing import Optional
 
 from vortex_logger import get_logger
 from config import (
     CRYPTO_PAIRS, SCAN_INTERVAL_SECONDS,
     ENABLE_MACRO_FILTER, OWN_MACRO_PAIRS, SESSION_FILTER_PAIRS,
+    VALIDATED_TRADING_PAIRS, RESEARCH_WATCHLIST_PAIRS,
     get_pair_params,
 )
-from scanner_utils import PairContext, ScanState, SignalRateMonitor
+from scanner_utils import (
+    PairContext,
+    ScanState,
+    SignalRateMonitor,
+    ScanDiagnostics,
+    StrategyDecision,
+)
+from strategy_metadata import get_strategy_meta
 from strategy_utils import get_candles, get_btc_macro_regime
 from telegram_bot import alert_result, alert_stats, alert_info
 from core.signal_handler import SignalHandler
 from trade_tracker import log_signal, update_trades_for_pair, get_stats, trim_old_trades
 from risk_manager import RiskManager
-from weights import apply_weight_gate, get_all_weights, update_weight
+from weights import get_all_weights, update_weight
 from lessons_injector import get_strategy_context, inject_lessons_to_context
 from strategy_runner import run_all_strategies
 
 log = get_logger(__name__)
+LESSONS_FILE = Path("/home/prospera/vortex/lessons.json")
+WEIGHTS_FILE = Path("/home/prospera/vortex/weights.json")
+DAILY_ANALYSIS_FILE = Path("/home/prospera/vortex/daily_analysis.py")
+
+
+def _fmt_pairs(pairs: list[str]) -> str:
+    return ", ".join(pairs) if pairs else "-"
 
 # ── Main scanner ──────────────────────────────────────────────
 
@@ -62,19 +79,25 @@ class VortexScanner:
                 from strategy5_vol_impulse import scan_vol_impulse
                 from strategy6_donchian_breakout import scan_donchian_breakout
 
-                for scanner in (
-                    scan_bos_mss,
-                    scan_ema_stack,
-                    scan_p10_swing,
-                    scan_vol_surge_bear,
-                    scan_vol_impulse,
-                    scan_donchian_breakout,
+                for strategy_id, scanner in (
+                    ("S1", scan_bos_mss),
+                    ("S2", scan_ema_stack),
+                    ("S3", scan_p10_swing),
+                    ("S4", scan_vol_surge_bear),
+                    ("S5", scan_vol_impulse),
+                    ("S6", scan_donchian_breakout),
                 ):
                     for setup in scanner(pair):
                         self.state.ob_add(setup["zone_key"])
+                        self.state.cd_ob_e.set(setup["zone_key"])
+                        self.state.cd_ob_e.set(f"{pair}_{strategy_id}")
             except Exception as e:
                 log.error(f"[WARMUP] {pair}: {e}")
-        log.info(f"[WARMUP] Done — {len(CRYPTO_PAIRS)} pairs seeded.")
+        log.info(
+            "[WARMUP] Done — "
+            f"{len(CRYPTO_PAIRS)} validated trading pairs seeded "
+            f"({_fmt_pairs(CRYPTO_PAIRS)})."
+        )
 
     # ── Session filter ────────────────────────────────────────
 
@@ -105,6 +128,24 @@ class VortexScanner:
             params           = get_pair_params(pair),
         )
 
+    @staticmethod
+    def _fmt_mtime(path: Path) -> str:
+        if not path.exists():
+            return "missing"
+        return datetime.fromtimestamp(path.stat().st_mtime).isoformat(timespec="seconds")
+
+    def _log_learning_state(self):
+        weights = get_all_weights()
+        lesson_update_mode = "batch_external" if DAILY_ANALYSIS_FILE.exists() else "unknown"
+        log.info(
+            "[LEARN][STATE] "
+            f"weights={json.dumps(weights, separators=(',', ':'), sort_keys=True)} "
+            f'weights_mtime="{self._fmt_mtime(WEIGHTS_FILE)}" '
+            f"lessons_exists={LESSONS_FILE.exists()} "
+            f'lessons_mtime="{self._fmt_mtime(LESSONS_FILE)}" '
+            f'lesson_update_mode="{lesson_update_mode}"'
+        )
+
     # ── Trade monitoring ──────────────────────────────────────
 
     def _monitor_trades(self, pair: str, current_price: float,
@@ -112,6 +153,7 @@ class VortexScanner:
         """Check TP/SL hits. Detect false signals (LOSS < 5 candles)."""
         for ct in update_trades_for_pair(pair, current_price, candle_high, candle_low):
             strat           = ct.get("strategy", "?")
+            meta            = get_strategy_meta(strat)
             candles_held    = ct.get("candles_to_resolve") or 999
             is_false_signal = ct["result"] == "LOSS" and candles_held < 5
 
@@ -127,7 +169,22 @@ class VortexScanner:
 
             log.info(f"{res_label} [{strat}]: {pair} {ct['direction']} "
                      f"| Close={ct['close_price']} | Candles={candles_held}")
+            old_w = get_all_weights().get(strat, 1.0)
             new_w = update_weight(strat, weight_result)
+            delta = new_w - old_w
+            log.info(
+                "[LEARN][WEIGHT_UPDATE] "
+                f"trade_id={ct.get('id')} "
+                f"pair={pair} "
+                f"strategy={strat} "
+                f'name="{meta.strategy_name}" '
+                f"outcome={weight_result} "
+                f"old_weight={old_w:.2f} "
+                f"new_weight={new_w:.2f} "
+                f"delta={delta:+.2f} "
+                "source=closed_trade_monitor "
+                f"close_time={ct.get('close_time')}"
+            )
             log.info(f"  Weight [{strat}]: {new_w:.3f}")
             alert_result(ct)
             self.risk_mgr.on_trade_closed()
@@ -171,14 +228,45 @@ class VortexScanner:
     # ── Scan cycle ────────────────────────────────────────────
 
     def scan_once(self, btc_macro: str):
+        self.state.diagnostics = ScanDiagnostics()
         self.risk_mgr.sync_open_count(get_stats()["open"])
         # Reset seen_ob each cycle — cooldowns (cd_ob_e) already prevent re-signals
         with self.state._ob_lock:
             self.state.seen_ob.clear()
         active_pairs = [p for p in CRYPTO_PAIRS if self._is_trading_session(p)]
+        inactive_pairs = [p for p in CRYPTO_PAIRS if p not in active_pairs]
+        research_pairs = RESEARCH_WATCHLIST_PAIRS
 
         # Warm candle cache in parallel (I/O bound)
         self._prefetch_candles(active_pairs)
+
+        log.info(
+            "[UNIVERSE] Trading(validated): "
+            f"{len(active_pairs)}/{len(CRYPTO_PAIRS)} active this cycle | "
+            f"{_fmt_pairs(active_pairs)}"
+        )
+        log.info(
+            "[UNIVERSE] Research/watchlist: "
+            f"{len(research_pairs)} configured | {_fmt_pairs(research_pairs)}"
+        )
+
+        if inactive_pairs:
+            for pair in inactive_pairs:
+                for strategy_id in ("S1", "S2", "S3", "S4", "S5", "S6"):
+                    meta = get_strategy_meta(strategy_id)
+                    self.state.diagnostics.record(StrategyDecision(
+                        pair=pair,
+                        strategy_id=meta.strategy_id,
+                        strategy_name=meta.strategy_name,
+                        legacy_label=meta.legacy_label,
+                        evaluated=False,
+                        raw_signal=False,
+                        blocked_reason="session_blocked",
+                    ))
+            log.info(
+                "[UNIVERSE] Session-blocked pairs this cycle: "
+                f"{_fmt_pairs(inactive_pairs)}"
+            )
 
         # Scan all pairs in parallel (P3.2 — full parallel per-pair)
         with ThreadPoolExecutor(max_workers=min(len(active_pairs), 6)) as ex:
@@ -190,14 +278,18 @@ class VortexScanner:
                     fut.result()
                 except Exception as e:
                     log.error(f"[SCAN ERROR] {pair}: {e}", exc_info=True)
+        self.state.diagnostics.log_summary()
 
     # ── Main loop ─────────────────────────────────────────────
 
     def run(self):
         log.info("=" * 50)
-        log.info(f"🤖 VORTEX — 6 Strategies | {len(CRYPTO_PAIRS)} pairs")
+        log.info(f"🤖 VORTEX — 6 Strategies | {len(CRYPTO_PAIRS)} validated trading pairs")
         log.info(f"⏱️  Interval: {SCAN_INTERVAL_SECONDS}s")
         log.info("[S1-S6 REDESIGN] Active strategy set from 2-cycle validation")
+        log.info(f"[UNIVERSE] Trading(validated): {_fmt_pairs(VALIDATED_TRADING_PAIRS)}")
+        log.info(f"[UNIVERSE] Research/watchlist: {_fmt_pairs(RESEARCH_WATCHLIST_PAIRS)}")
+        self._log_learning_state()
         log.info("=" * 50)
 
         alert_info(
@@ -208,7 +300,9 @@ class VortexScanner:
             f"S4: S8 Volume Surge Bear SHORT (RR 1:2)\n"
             f"S5: volume_impulse_bull_close_high LONG (RR 1:2, 4H)\n"
             f"S6: donchian_breakout LONG 50-period (RR 1:2, 4H)\n"
-            f"Pairs: {len(CRYPTO_PAIRS)} | Interval: {SCAN_INTERVAL_SECONDS}s"
+            f"Validated pairs: {len(VALIDATED_TRADING_PAIRS)} | "
+            f"Watchlist: {len(RESEARCH_WATCHLIST_PAIRS)} | "
+            f"Interval: {SCAN_INTERVAL_SECONDS}s"
         )
 
         while True:
