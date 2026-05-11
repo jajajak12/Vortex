@@ -2,6 +2,7 @@ import json
 import time
 from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
+from importlib import import_module
 from pathlib import Path
 from typing import Optional
 
@@ -19,9 +20,15 @@ from scanner_utils import (
     ScanDiagnostics,
     StrategyDecision,
 )
+from strategy_registry import (
+    STRATEGY_ORDER,
+    get_auto_open_strategy_ids,
+    get_strategy_definition,
+    get_watch_only_strategy_ids,
+)
 from strategy_metadata import get_strategy_meta
 from strategy_utils import get_candles, get_btc_macro_regime
-from telegram_bot import alert_result, alert_stats, alert_info
+from telegram_bot import alert_result, alert_stats, alert_info, alert_time_exit
 from core.signal_handler import SignalHandler
 from trade_tracker import log_signal, update_trades_for_pair, get_stats, trim_old_trades
 from risk_manager import RiskManager
@@ -72,21 +79,9 @@ class VortexScanner:
         log.info("[WARMUP] Pre-scanning existing setups (suppressing launch alerts)...")
         for pair in CRYPTO_PAIRS:
             try:
-                from strategy1_bos_mss import scan_bos_mss
-                from strategy2_ema_stack import scan_ema_stack
-                from strategy3_p10_swing import scan_p10_swing
-                from strategy4_vol_surge_bear import scan_vol_surge_bear
-                from strategy5_vol_impulse import scan_vol_impulse
-                from strategy6_donchian_breakout import scan_donchian_breakout
-
-                for strategy_id, scanner in (
-                    ("S1", scan_bos_mss),
-                    ("S2", scan_ema_stack),
-                    ("S3", scan_p10_swing),
-                    ("S4", scan_vol_surge_bear),
-                    ("S5", scan_vol_impulse),
-                    ("S6", scan_donchian_breakout),
-                ):
+                for strategy_id in STRATEGY_ORDER:
+                    definition = get_strategy_definition(strategy_id)
+                    scanner = getattr(import_module(definition.scanner_module), definition.scanner_func)
                     for setup in scanner(pair):
                         self.state.ob_add(setup["zone_key"])
                         self.state.cd_ob_e.set(setup["zone_key"])
@@ -150,14 +145,20 @@ class VortexScanner:
 
     def _monitor_trades(self, pair: str, current_price: float,
                         candle_high: float = 0.0, candle_low: float = 0.0):
-        """Check TP/SL hits. Detect false signals (LOSS < 5 candles)."""
+        """Check TP/SL hits and max-hold timeout. Detect false signals (LOSS < 5 candles)."""
         for ct in update_trades_for_pair(pair, current_price, candle_high, candle_low):
             strat           = ct.get("strategy", "?")
             meta            = get_strategy_meta(strat)
             candles_held    = ct.get("candles_to_resolve") or 999
-            is_false_signal = ct["result"] == "LOSS" and candles_held < 5
+            is_time_exit    = ct.get("close_reason") == "TIME_EXIT"
+            is_false_signal = (ct["result"] == "LOSS"
+                               and candles_held < 5
+                               and not is_time_exit)
 
-            if ct["result"] == "WIN":
+            if is_time_exit:
+                weight_result = ct["result"]  # WIN or LOSS based on price at timeout
+                res_label     = f"⏱️ TIME_EXIT ({ct['result']})"
+            elif ct["result"] == "WIN":
                 weight_result = "WIN"
                 res_label     = "✅ WIN"
             elif is_false_signal:
@@ -168,7 +169,8 @@ class VortexScanner:
                 res_label     = "❌ LOSS"
 
             log.info(f"{res_label} [{strat}]: {pair} {ct['direction']} "
-                     f"| Close={ct['close_price']} | Candles={candles_held}")
+                     f"| Close={ct['close_price']} | Candles={candles_held}"
+                     + (f" | Held={ct.get('held_hours')}h" if is_time_exit else ""))
             old_w = get_all_weights().get(strat, 1.0)
             new_w = update_weight(strat, weight_result)
             delta = new_w - old_w
@@ -186,7 +188,10 @@ class VortexScanner:
                 f"close_time={ct.get('close_time')}"
             )
             log.info(f"  Weight [{strat}]: {new_w:.3f}")
-            alert_result(ct)
+            if is_time_exit:
+                alert_time_exit(ct)
+            else:
+                alert_result(ct)
             self.risk_mgr.on_trade_closed()
 
     # ── Parallel candle prefetch ──────────────────────────────
@@ -209,7 +214,7 @@ class VortexScanner:
     # ── Per-pair scan (runs in thread) ────────────────────────
 
     def _scan_pair(self, pair: str, btc_macro: str):
-        """Full scan for one pair — monitor + all 6 strategies. Thread-safe."""
+        """Full scan for one pair — monitor + full strategy lineup. Thread-safe."""
         try:
             candles_30m    = get_candles(pair, "30m", limit=100)
             last           = candles_30m[-1]
@@ -252,7 +257,7 @@ class VortexScanner:
 
         if inactive_pairs:
             for pair in inactive_pairs:
-                for strategy_id in ("S1", "S2", "S3", "S4", "S5", "S6"):
+                for strategy_id in STRATEGY_ORDER:
                     meta = get_strategy_meta(strategy_id)
                     self.state.diagnostics.record(StrategyDecision(
                         pair=pair,
@@ -283,31 +288,44 @@ class VortexScanner:
     # ── Main loop ─────────────────────────────────────────────
 
     def run(self):
+        auto_open_ids = get_auto_open_strategy_ids()
+        watch_only_ids = get_watch_only_strategy_ids()
+        auto_open_lines = []
+        for strategy_id in auto_open_ids:
+            definition = get_strategy_definition(strategy_id)
+            auto_open_lines.append(
+                f"{strategy_id}: {definition.display_name} (RR 1:{definition.planned_rr:g}, {definition.timeframe})"
+            )
+        watch_only_lines = []
+        for strategy_id in watch_only_ids:
+            definition = get_strategy_definition(strategy_id)
+            watch_only_lines.append(f"{strategy_id}: {definition.display_name}")
+        startup_message = (
+            "🤖 Vortex AKTIF — final dry-run lineup\n"
+            + "\n".join(auto_open_lines)
+            + "\n"
+            + f"Watch-only: {', '.join(watch_only_ids)}\n"
+            + f"Validated pairs: {len(VALIDATED_TRADING_PAIRS)} | "
+            + f"Watchlist: {len(RESEARCH_WATCHLIST_PAIRS)} | "
+            + f"Interval: {SCAN_INTERVAL_SECONDS}s"
+        )
+
         log.info("=" * 50)
-        log.info(f"🤖 VORTEX — 6 Strategies | {len(CRYPTO_PAIRS)} validated trading pairs")
+        log.info(f"🤖 VORTEX — {len(STRATEGY_ORDER)} registered strategies | {len(CRYPTO_PAIRS)} validated trading pairs")
         log.info(f"⏱️  Interval: {SCAN_INTERVAL_SECONDS}s")
-        log.info("[S1-S6 REDESIGN] Active strategy set from 2-cycle validation")
+        log.info("[DRY-RUN LINEUP] Final active/watch-only runtime loaded")
         log.info(f"[UNIVERSE] Trading(validated): {_fmt_pairs(VALIDATED_TRADING_PAIRS)}")
         log.info(f"[UNIVERSE] Research/watchlist: {_fmt_pairs(RESEARCH_WATCHLIST_PAIRS)}")
         self._log_learning_state()
+        log.info(f"[LINEUP] Auto-open: {' | '.join(auto_open_lines)}")
+        log.info(f"[LINEUP] Watch-only: {' | '.join(watch_only_lines)}")
         log.info("=" * 50)
 
-        alert_info(
-            f"🤖 Vortex AKTIF — S1-S6 redesign\n"
-            f"S1: S4-MOMENTUM BOS+MSS (RR 1:1)\n"
-            f"S2: S6 EMA Stack (RR 1:2)\n"
-            f"S3: S7 P10 Swing Reversal (RR 1:1)\n"
-            f"S4: S8 Volume Surge Bear SHORT (RR 1:2)\n"
-            f"S5: volume_impulse_bull_close_high LONG (RR 1:2, 4H)\n"
-            f"S6: donchian_breakout LONG 50-period (RR 1:2, 4H)\n"
-            f"Validated pairs: {len(VALIDATED_TRADING_PAIRS)} | "
-            f"Watchlist: {len(RESEARCH_WATCHLIST_PAIRS)} | "
-            f"Interval: {SCAN_INTERVAL_SECONDS}s"
-        )
+        alert_info(startup_message)
 
         while True:
             scan_start = time.time()
-            log.info("[S1-S6] Scanning...")
+            log.info("[LINEUP] Scanning...")
 
             try:
                 now = time.time()
@@ -335,7 +353,7 @@ class VortexScanner:
                 log.info(f"[STATS] WR={stats['winrate']}% "
                          f"W={stats['wins']} L={stats['losses']} "
                          f"Open={stats['open']} | "
-                         f"DailyRisk={risk_st['daily_risk_used']}%")
+                         f"DailyRisk=${risk_st['daily_risk_used_usd']:.2f}")
                 for s, d in stats.get("by_strategy", {}).items():
                     log.info(f"  [{s}] {d['wins']}W {d['losses']}L WR={d['winrate']}%")
                 alert_stats(stats)

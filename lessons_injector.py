@@ -29,6 +29,10 @@ _STRATEGY_TAGS = {
     "S4": ["S4", "VOLUME", "SURGE", "BEAR", "SHORT"],
     "S5": ["S5", "VOLUME", "IMPULSE", "BULL", "CLOSE_HIGH"],
     "S6": ["S6", "DONCHIAN", "BREAKOUT", "LONG"],
+    "S7": ["S7", "EMA200", "PULLBACK", "TREND", "CONTINUATION"],
+    "S8": ["S8", "DONCHIAN", "EMA200", "DAILY", "BREAKOUT", "LONG"],
+    "S9": ["S9", "VWAP", "BOUNCE", "MEAN_REVERSION"],
+    "S10": ["S10", "VOL_BREAK", "VOLUME", "BREAKOUT", "LONG"],
 }
 
 # Pair-specific lessons
@@ -252,6 +256,30 @@ _PROMPT_TEMPLATES = {
 - donchian_breakout LONG 50-period
 - 4H close above prior 50-candle Donchian high
 - RR 1:2
+{LESSONS}""",
+
+    "S7": """[S7 CONTEXT]
+- EMA200 Pullback
+- 4H continuation around EMA200
+- RR 1:3
+{LESSONS}""",
+
+    "S8": """[S8 CONTEXT]
+- Donchian Daily EMA200 LONG
+- 4H Donchian breakout with daily EMA200 filter
+- RR 1:3
+{LESSONS}""",
+
+    "S9": """[S9 CONTEXT]
+- VWAP Bounce
+- 4H VWAP20 bounce with volume confirmation
+- RR 1:1.5
+{LESSONS}""",
+
+    "S10": """[S10 CONTEXT]
+- Vol_Break LONG
+- 4H prior-high breakout with strong volume
+- RR 1:3
 {LESSONS}""",
 }
 

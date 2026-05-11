@@ -13,6 +13,7 @@ from typing import Optional, TYPE_CHECKING
 from vortex_logger import get_logger
 from config import SIGNAL_RATE_MIN
 from strategy_metadata import get_strategy_meta
+from strategy_registry import STRATEGY_ORDER
 
 if TYPE_CHECKING:
     from core.signal_handler import SignalHandler
@@ -22,7 +23,7 @@ log = get_logger(__name__)
 
 STRATEGY_LABELS: dict[str, str] = {
     sid: get_strategy_meta(sid).strategy_name
-    for sid in ("S1", "S2", "S3", "S4", "S5", "S6")
+    for sid in STRATEGY_ORDER
 }
 
 
@@ -178,7 +179,7 @@ class ScanState:
     Thread-safe: masing-masing field sudah punya lock internal.
     """
     # Cooldown stores — satu per alert type
-    # Shared S1-S6 entry cooldown store for setup-level signals.
+    # Shared entry cooldown store for setup-level signals.
     cd_touch:  CooldownStore = field(default_factory=CooldownStore)
     cd_entry:  CooldownStore = field(default_factory=CooldownStore)
     cd_wick_e: CooldownStore = field(default_factory=CooldownStore)

@@ -1,7 +1,7 @@
 """
 core/signal_handler.py — Unified Signal Alert System
 =====================================================
-Semua entry signal dari 4 strategi melewati SignalHandler.send_alert().
+Semua entry signal melewati SignalHandler.send_alert().
 Format Telegram konsisten, score dinormalisasi ke skala 1–10.
 
 Usage (di scanner.py):
@@ -58,10 +58,13 @@ class Signal:
     rr:                 float        # RR ke TP terbaik; di-update setelah TP di-cap
     score:              float        # raw score; dinormalisasi ke 1–10 oleh handler
     reason:             str          # 1–2 kalimat penjelasan kenapa signal muncul
-    risk_percent:       float = 0.0  # % risk dari balance (0 = tidak ditampilkan)
-    position_size:      float = 0.0  # nominal USDT (0 = tidak ditampilkan)
+    risk_percent:       float = 0.0  # kept for compatibility
+    position_size:      float = 0.0  # nominal USDT
     invalidation_price: Optional[float] = None
     original_rr:        float = 0.0  # RR sebelum TP cap; 0.0 = belum diproses
+    current_equity:     float = 0.0  # dry-run equity at signal time
+    risk_usd:           float = 0.0  # min(equity * 2%, $500)
+    max_risk_usd:       float = 0.0  # MAX_RISK_USD constant
 
 
 # ── S4 TP cap utility ─────────────────────────────────────────────
@@ -280,7 +283,15 @@ class SignalHandler:
                 f"  (+{tp2_pct:.2f}%)  RR 1:{tp2_rr}\n"
             )
 
-        risk_line = f"Risk     : {s.risk_percent:.1f}%\n" if s.risk_percent > 0 else "Risk     : -\n"
+        if s.current_equity > 0:
+            equity_line   = f"Equity   : ${s.current_equity:,.2f}\n"
+            max_r         = s.max_risk_usd if s.max_risk_usd > 0 else 500.0
+            risk_line     = f"Risk     : ${s.risk_usd:,.2f} / max ${max_r:,.0f}\n"
+            risk_rule_line = "Risk rule: min(2% equity, $500)\n"
+        else:
+            equity_line    = ""
+            risk_line      = f"Risk     : {s.risk_percent:.1f}%\n" if s.risk_percent > 0 else "Risk     : -\n"
+            risk_rule_line = ""
         size_line = f"Size     : ${s.position_size:,.2f}\n" if s.position_size > 0 else "Size     : -\n"
 
         inv_line = ""
@@ -293,6 +304,7 @@ class SignalHandler:
         ts = datetime.now(timezone.utc).strftime("%Y-%m-%d %H:%M UTC")
         strategy_lines = (
             f"Strategy : {meta.strategy_id} — {strat_name}\n"
+            f"Plan RR  : 1:{s.rr:.2f}\n"
         )
 
         if s.tp2_price is not None and round(s.tp2_price, 8) != round(s.tp1_price, 8):
@@ -321,7 +333,9 @@ class SignalHandler:
             f"{tp_lines}"
             f"━━━━━━━━━━━━━━━━\n"
             f"Score    : {score}/10  {score_label}\n"
+            f"{equity_line}"
             f"{risk_line}"
+            f"{risk_rule_line}"
             f"{size_line}"
             f"Time     : {ts}\n"
             f"━━━━━━━━━━━━━━━━\n"

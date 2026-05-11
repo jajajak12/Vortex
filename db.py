@@ -35,7 +35,11 @@ CREATE TABLE IF NOT EXISTS trades (
     regime_state        TEXT,
     position_usdt       REAL    DEFAULT 0,
     rr                  REAL    DEFAULT 0,
-    candles_to_resolve  INTEGER
+    candles_to_resolve  INTEGER,
+    close_reason        TEXT,
+    current_equity      REAL    DEFAULT 0,
+    risk_usd            REAL    DEFAULT 0,
+    stop_distance_pct   REAL    DEFAULT 0
 );
 CREATE INDEX IF NOT EXISTS idx_pair_status   ON trades(pair, status);
 CREATE INDEX IF NOT EXISTS idx_strategy      ON trades(strategy);
@@ -65,10 +69,27 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     return dict(row)
 
 
+def _migrate_schema():
+    """ALTER TABLE to add new columns to existing DBs without data loss."""
+    with _conn() as con:
+        cols = {row[1] for row in con.execute("PRAGMA table_info(trades)").fetchall()}
+        additions = [
+            ("close_reason",      "TEXT"),
+            ("current_equity",    "REAL DEFAULT 0"),
+            ("risk_usd",          "REAL DEFAULT 0"),
+            ("stop_distance_pct", "REAL DEFAULT 0"),
+        ]
+        for col_name, col_def in additions:
+            if col_name not in cols:
+                con.execute(f"ALTER TABLE trades ADD COLUMN {col_name} {col_def}")
+                log.info(f"[DB] Schema migrated: added {col_name} column")
+
+
 def init_db():
     """Create schema, enable WAL, run migration from trades.json if needed."""
     with _conn() as con:
         con.executescript(_SCHEMA)
+    _migrate_schema()
     _migrate_from_json()
     purge_duplicates()
 
@@ -160,6 +181,30 @@ def reset_all_trades():
     return deleted
 
 
+# ── Equity calculation ─────────────────────────────────────────────────────────
+
+def compute_realized_pnl() -> float:
+    """Sum realized PnL from all CLOSED trades using position_usdt and price delta."""
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT direction, entry, close_price, position_usdt FROM trades "
+            "WHERE status='CLOSED' AND close_price IS NOT NULL "
+            "  AND entry > 0 AND position_usdt > 0"
+        ).fetchall()
+    total = 0.0
+    for r in rows:
+        entry = float(r["entry"] or 0)
+        close = float(r["close_price"] or 0)
+        pos   = float(r["position_usdt"] or 0)
+        if entry <= 0 or pos <= 0:
+            continue
+        if r["direction"] == "LONG":
+            total += (close - entry) / entry * pos
+        else:
+            total += (entry - close) / entry * pos
+    return round(total, 4)
+
+
 # ── Write operations ───────────────────────────────────────────────────────────
 
 def insert_trade(trade: dict) -> dict:
@@ -168,8 +213,9 @@ def insert_trade(trade: dict) -> dict:
             INSERT INTO trades
               (id, time, pair, direction, entry, sl, tp, status, result,
                close_price, close_time, strategy, confluence_score,
-               regime_state, position_usdt, rr, candles_to_resolve)
-            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+               regime_state, position_usdt, rr, candles_to_resolve,
+               current_equity, risk_usd, stop_distance_pct)
+            VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)
         """, (
             trade["id"],              trade["time"],
             trade["pair"],            trade["direction"],
@@ -180,6 +226,8 @@ def insert_trade(trade: dict) -> dict:
             trade.get("confluence_score", 0), trade.get("regime_state"),
             trade.get("position_usdt", 0),    trade.get("rr", 0),
             trade.get("candles_to_resolve"),
+            trade.get("current_equity", 0),   trade.get("risk_usd", 0),
+            trade.get("stop_distance_pct", 0),
         ))
         # Auto-dedup: if an OPEN trade for same pair+strategy+direction exists within last 10 min,
         # this insertion is a duplicate — mark it immediately so it never enters stats or monitoring.
@@ -203,14 +251,15 @@ def insert_trade(trade: dict) -> dict:
 
 
 def close_trade(trade_id: int, result: str, close_price: float,
-                close_time: str, candles_to_resolve: int | None):
+                close_time: str, candles_to_resolve: int | None,
+                close_reason: str | None = None):
     with _conn() as con:
         con.execute("""
             UPDATE trades SET
                 status = 'CLOSED', result = ?, close_price = ?,
-                close_time = ?, candles_to_resolve = ?
+                close_time = ?, candles_to_resolve = ?, close_reason = ?
             WHERE id = ?
-        """, (result, close_price, close_time, candles_to_resolve, trade_id))
+        """, (result, close_price, close_time, candles_to_resolve, close_reason, trade_id))
 
 
 # ── Read operations ────────────────────────────────────────────────────────────

@@ -56,13 +56,22 @@ def alert_touch(pair: str, price: float, zone_low: float, zone_high: float, dire
     send_telegram(msg)
 
 def alert_entry(pair: str, direction: str, entry: float, sl: float, tp: float,
-                rr: str = "1:1", position_usdt: float = 0.0):
+                rr: str = "1:1", position_usdt: float = 0.0,
+                current_equity: float = 0.0, risk_usd: float = 0.0):
     """Alert 2: Rejection confirmed, entry signal."""
     emoji  = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
     sl_pct = abs(entry - sl) / entry * 100
     tp_pct = abs(tp - entry) / entry * 100
     pos_line = (f"Size    : <b>${position_usdt:,.2f} USDT</b>\n"
                 if position_usdt > 0 else "")
+    if current_equity > 0:
+        equity_lines = (
+            f"Equity  : ${current_equity:,.2f}\n"
+            f"Risk    : ${risk_usd:,.2f} / max $500\n"
+            f"Rule    : min(2% equity, $500)\n"
+        )
+    else:
+        equity_lines = ""
     msg = (
         f"✅ <b>[STRAT1] ENTRY SIGNAL — {emoji}</b>\n"
         f"━━━━━━━━━━━━━━━\n"
@@ -72,6 +81,7 @@ def alert_entry(pair: str, direction: str, entry: float, sl: float, tp: float,
         f"TP      : ${tp:,.4f} ({tp_pct:.2f}%)\n"
         f"RR      : {rr}\n"
         f"{pos_line}"
+        f"{equity_lines}"
         f"━━━━━━━━━━━━━━━\n"
         f"⚡ <i>Entry di open candle berikutnya</i>"
     )
@@ -105,6 +115,50 @@ def alert_result(trade: dict):
         f"{SEP}\n"
         f"Open     : {trade.get('time', '-')}\n"
         f"Close    : {trade.get('close_time', '-')}"
+    )
+    send_telegram(msg)
+
+
+def alert_time_exit(trade: dict):
+    """Alert: trade force-closed after max hold (168h / 1 week)."""
+    direction   = trade.get("direction", "?")
+    dir_em      = "🟢 LONG" if direction == "LONG" else "🔴 SHORT"
+    strat       = trade.get("strategy") or "?"
+    entry       = float(trade.get("entry") or 0)
+    close_price = float(trade.get("close_price") or 0)
+    sl          = float(trade.get("sl") or 0)
+    tp          = float(trade.get("tp") or 0)
+    realized_r  = float(trade.get("realized_r") or 0)
+    held_hours  = trade.get("held_hours") or 0
+    candles     = trade.get("candles_to_resolve")
+
+    if entry:
+        pnl_pct = (close_price - entry) / entry * 100
+        if direction == "SHORT":
+            pnl_pct = (entry - close_price) / entry * 100
+    else:
+        pnl_pct = 0.0
+
+    held_days = held_hours / 24
+    held_str  = f"{held_days:.1f}d ({held_hours:.0f}h)"
+    candle_line = f"Candles  : {candles}\n" if candles else ""
+    rr_line     = f"Planned R: 1:{_fmt_num(trade.get('rr') or 0, 2)}\n" if trade.get("rr") else ""
+
+    msg = (
+        f"⏱️ <b>TRADE CLOSED - TIME EXIT</b>\n"
+        f"{SEP}\n"
+        f"{dir_em}  <b>{trade.get('pair', '?')}</b>  |  {strat}\n"
+        f"Entry    : <b>${_fmt_price(entry)}</b>\n"
+        f"Close    : <b>${_fmt_price(close_price)}</b> ({pnl_pct:+.2f}%)\n"
+        f"SL / TP  : ${_fmt_price(sl)} / ${_fmt_price(tp)}\n"
+        f"R result : <b>{realized_r:+.2f}R</b>\n"
+        f"{rr_line}"
+        f"Held     : {held_str}\n"
+        f"{candle_line}"
+        f"{SEP}\n"
+        f"Open     : {trade.get('time', '-')}\n"
+        f"Close    : {trade.get('close_time', '-')}\n"
+        f"Reason   : Max hold reached (168h)"
     )
     send_telegram(msg)
 
