@@ -65,6 +65,7 @@ class BinanceDemoAdapter:
         self.session = session or requests.Session()
         self.session.headers.update({"User-Agent": "vortex-binance-demo/1.0"})
         self.order_calls_attempted = 0
+        self.order_endpoints_called = False
 
         self._validate_configuration()
         if self.api_key:
@@ -195,10 +196,12 @@ class BinanceDemoAdapter:
         self.order_calls_attempted += 1
         if not self.execution_enabled:
             raise RuntimeError("Binance execution is disabled; refusing market order placement.")
+        self.order_endpoints_called = True
         raise RuntimeError("Order placement is intentionally not implemented in the demo adapter.")
 
     def place_take_profit_stop_loss(self, *args: Any, **kwargs: Any) -> Any:
         self.order_calls_attempted += 1
         if not self.execution_enabled:
             raise RuntimeError("Binance execution is disabled; refusing TP/SL order placement.")
+        self.order_endpoints_called = True
         raise RuntimeError("Order placement is intentionally not implemented in the demo adapter.")
