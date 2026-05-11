@@ -214,6 +214,9 @@ class BinanceDemoAdapter:
         payload["symbols"] = [item for item in payload.get("symbols", []) if item.get("symbol") in wanted]
         return payload
 
+    def ticker_price(self, symbol: str) -> dict[str, Any]:
+        return self._request("GET", "/fapi/v1/ticker/price", params={"symbol": self._normalize_symbol(symbol)})
+
     def account_info(self) -> dict[str, Any]:
         return self._request("GET", "/fapi/v2/account", signed=True)
 
