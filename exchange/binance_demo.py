@@ -79,6 +79,13 @@ class BinanceDemoAdapter:
             bool(self.api_key and self.api_secret),
         )
 
+    def _base_url_host(self) -> str:
+        return (urlparse(self.base_url).hostname or "").lower()
+
+    def _is_mainnet_like_host(self) -> bool:
+        host = self._base_url_host()
+        return host in {"api.binance.com", "fapi.binance.com"} or "api.binance.com" in host or "fapi.binance.com" in host
+
     def _validate_configuration(self) -> None:
         if not self.demo_mode and not self.allow_non_demo_override:
             raise RuntimeError(
@@ -86,8 +93,8 @@ class BinanceDemoAdapter:
                 "Set BINANCE_DEMO_MODE=true or explicitly override with BINANCE_DEMO_ALLOW_UNSAFE_OVERRIDE=true."
             )
 
-        host = (urlparse(self.base_url).hostname or "").lower()
-        if host in {"api.binance.com", "fapi.binance.com"} or "api.binance.com" in host or "fapi.binance.com" in host:
+        host = self._base_url_host()
+        if self._is_mainnet_like_host():
             raise RuntimeError(
                 f"Refusing demo adapter startup with mainnet host '{host}'. "
                 f"Use the demo/testnet base URL instead, defaulting to {DEFAULT_BASE_URL}."
@@ -150,6 +157,47 @@ class BinanceDemoAdapter:
             f"Binance API error status={response.status_code} path={path} response={message}"
         )
 
+    def _require_execution_guard(self) -> None:
+        if not self.execution_enabled:
+            raise RuntimeError(
+                "Binance execution is disabled; refusing request because BINANCE_EXECUTION_ENABLED is not true."
+            )
+        if not self.demo_mode:
+            raise RuntimeError(
+                "Binance demo adapter refused execution because BINANCE_DEMO_MODE is not true."
+            )
+        if self._is_mainnet_like_host():
+            raise RuntimeError(
+                f"Binance demo adapter refused execution because base URL '{self.base_url}' looks like mainnet."
+            )
+        if not self.base_url.startswith("https://"):
+            raise RuntimeError("Binance demo adapter refused execution because base URL is not https.")
+
+    def _record_execution_attempt(self) -> None:
+        self.order_calls_attempted += 1
+
+    def _send_order_request(
+        self,
+        method: str,
+        path: str,
+        *,
+        params: dict[str, Any] | None = None,
+    ) -> Any:
+        self.order_endpoints_called = True
+        return self._request(method, path, params=params, signed=True)
+
+    def _normalize_symbol(self, symbol: str) -> str:
+        return symbol.strip().upper()
+
+    def _normalize_side(self, side: str) -> str:
+        normalized = side.strip().upper()
+        if normalized not in {"BUY", "SELL"}:
+            raise ValueError(f"Unsupported Binance order side: {side}")
+        return normalized
+
+    def _stringify_flag(self, value: bool) -> str:
+        return "true" if value else "false"
+
     def ping(self) -> bool:
         self._request("GET", "/fapi/v1/ping")
         return True
@@ -192,16 +240,77 @@ class BinanceDemoAdapter:
             }
         raise RuntimeError(f"Symbol not found in exchange info: {symbol}")
 
-    def place_market_order(self, *args: Any, **kwargs: Any) -> Any:
-        self.order_calls_attempted += 1
-        if not self.execution_enabled:
-            raise RuntimeError("Binance execution is disabled; refusing market order placement.")
-        self.order_endpoints_called = True
-        raise RuntimeError("Order placement is intentionally not implemented in the demo adapter.")
+    def place_market_order(self, symbol: str, side: str, quantity: float | str, reduce_only: bool = False) -> Any:
+        self._record_execution_attempt()
+        self._require_execution_guard()
+        params = {
+            "symbol": self._normalize_symbol(symbol),
+            "side": self._normalize_side(side),
+            "type": "MARKET",
+            "quantity": quantity,
+            "reduceOnly": self._stringify_flag(reduce_only),
+        }
+        return self._send_order_request("POST", "/fapi/v1/order", params=params)
 
-    def place_take_profit_stop_loss(self, *args: Any, **kwargs: Any) -> Any:
-        self.order_calls_attempted += 1
-        if not self.execution_enabled:
-            raise RuntimeError("Binance execution is disabled; refusing TP/SL order placement.")
-        self.order_endpoints_called = True
-        raise RuntimeError("Order placement is intentionally not implemented in the demo adapter.")
+    def place_stop_market_order(
+        self,
+        symbol: str,
+        side: str,
+        stop_price: float | str,
+        quantity: float | str,
+        reduce_only: bool = True,
+    ) -> Any:
+        self._record_execution_attempt()
+        self._require_execution_guard()
+        params = {
+            "symbol": self._normalize_symbol(symbol),
+            "side": self._normalize_side(side),
+            "type": "STOP_MARKET",
+            "stopPrice": stop_price,
+            "quantity": quantity,
+            "reduceOnly": self._stringify_flag(reduce_only),
+            "closePosition": "false",
+        }
+        return self._send_order_request("POST", "/fapi/v1/order", params=params)
+
+    def place_take_profit_market_order(
+        self,
+        symbol: str,
+        side: str,
+        stop_price: float | str,
+        quantity: float | str,
+        reduce_only: bool = True,
+    ) -> Any:
+        self._record_execution_attempt()
+        self._require_execution_guard()
+        params = {
+            "symbol": self._normalize_symbol(symbol),
+            "side": self._normalize_side(side),
+            "type": "TAKE_PROFIT_MARKET",
+            "stopPrice": stop_price,
+            "quantity": quantity,
+            "reduceOnly": self._stringify_flag(reduce_only),
+            "closePosition": "false",
+        }
+        return self._send_order_request("POST", "/fapi/v1/order", params=params)
+
+    def cancel_order(self, symbol: str, order_id: int | str) -> Any:
+        self._record_execution_attempt()
+        self._require_execution_guard()
+        params = {
+            "symbol": self._normalize_symbol(symbol),
+            "orderId": order_id,
+        }
+        return self._send_order_request("DELETE", "/fapi/v1/order", params=params)
+
+    def get_open_orders(self, symbol: str | None = None) -> Any:
+        params: dict[str, Any] = {}
+        if symbol:
+            params["symbol"] = self._normalize_symbol(symbol)
+        return self._request("GET", "/fapi/v1/openOrders", params=params, signed=True)
+
+    def get_position_risk(self, symbol: str | None = None) -> Any:
+        params: dict[str, Any] = {}
+        if symbol:
+            params["symbol"] = self._normalize_symbol(symbol)
+        return self._request("GET", "/fapi/v2/positionRisk", params=params, signed=True)
