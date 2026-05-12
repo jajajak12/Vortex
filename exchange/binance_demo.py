@@ -266,15 +266,16 @@ class BinanceDemoAdapter:
         self._record_execution_attempt()
         self._require_execution_guard()
         params = {
+            "algoType": "CONDITIONAL",
             "symbol": self._normalize_symbol(symbol),
             "side": self._normalize_side(side),
             "type": "STOP_MARKET",
-            "stopPrice": stop_price,
+            "triggerPrice": stop_price,
             "quantity": quantity,
             "reduceOnly": self._stringify_flag(reduce_only),
             "closePosition": "false",
         }
-        return self._send_order_request("POST", "/fapi/v1/order", params=params)
+        return self._send_order_request("POST", "/fapi/v1/algoOrder", params=params)
 
     def place_take_profit_market_order(
         self,
@@ -287,15 +288,16 @@ class BinanceDemoAdapter:
         self._record_execution_attempt()
         self._require_execution_guard()
         params = {
+            "algoType": "CONDITIONAL",
             "symbol": self._normalize_symbol(symbol),
             "side": self._normalize_side(side),
             "type": "TAKE_PROFIT_MARKET",
-            "stopPrice": stop_price,
+            "triggerPrice": stop_price,
             "quantity": quantity,
             "reduceOnly": self._stringify_flag(reduce_only),
             "closePosition": "false",
         }
-        return self._send_order_request("POST", "/fapi/v1/order", params=params)
+        return self._send_order_request("POST", "/fapi/v1/algoOrder", params=params)
 
     def cancel_order(self, symbol: str, order_id: int | str) -> Any:
         self._record_execution_attempt()
@@ -306,11 +308,27 @@ class BinanceDemoAdapter:
         }
         return self._send_order_request("DELETE", "/fapi/v1/order", params=params)
 
+    def cancel_algo_order(self, algo_id: int | str) -> Any:
+        self._record_execution_attempt()
+        self._require_execution_guard()
+        params = {
+            "algoId": algo_id,
+        }
+        return self._send_order_request("DELETE", "/fapi/v1/algoOrder", params=params)
+
     def get_open_orders(self, symbol: str | None = None) -> Any:
         params: dict[str, Any] = {}
         if symbol:
             params["symbol"] = self._normalize_symbol(symbol)
         return self._request("GET", "/fapi/v1/openOrders", params=params, signed=True)
+
+    def get_open_algo_orders(self, symbol: str | None = None, algo_type: str | None = "CONDITIONAL") -> Any:
+        params: dict[str, Any] = {}
+        if algo_type:
+            params["algoType"] = algo_type
+        if symbol:
+            params["symbol"] = self._normalize_symbol(symbol)
+        return self._request("GET", "/fapi/v1/openAlgoOrders", params=params, signed=True)
 
     def get_position_risk(self, symbol: str | None = None) -> Any:
         params: dict[str, Any] = {}
