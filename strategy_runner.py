@@ -282,7 +282,7 @@ def _emit_setup(ctx: PairContext, state: ScanState, strategy_id: str) -> None:
                 risk_usd=risk.risk_usd,
                 max_risk_usd=MAX_RISK_USD,
             ))
-            log_signal(
+            opened_trade = log_signal(
                 ctx.pair,
                 direction,
                 trade["entry"],
@@ -296,6 +296,11 @@ def _emit_setup(ctx: PairContext, state: ScanState, strategy_id: str) -> None:
                 current_equity=risk.current_equity,
                 risk_usd=risk.risk_usd,
             )
+            if state.auto_demo_executor is not None:
+                state.auto_demo_executor.submit_trade(
+                    opened_trade,
+                    cycle_started_at=state.scan_cycle_started_at,
+                )
             state.risk_mgr.on_trade_opened(risk_usd=risk.risk_usd)
             state.rate_mon.track(ctx.pair)
             log.info(

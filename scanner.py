@@ -35,6 +35,7 @@ from risk_manager import RiskManager
 from weights import get_all_weights, update_weight
 from lessons_injector import get_strategy_context, inject_lessons_to_context
 from strategy_runner import run_all_strategies
+from exchange.binance_demo_executor import BinanceDemoAutoExecutor
 
 log = get_logger(__name__)
 LESSONS_FILE = Path("/home/prospera/vortex/lessons.json")
@@ -58,6 +59,7 @@ class VortexScanner:
         self.state = ScanState(
             signal_handler = self.signal_handler,
             risk_mgr       = self.risk_mgr,
+            auto_demo_executor = BinanceDemoAutoExecutor(),
             rate_mon       = self.rate_mon,
         )
 
@@ -234,6 +236,7 @@ class VortexScanner:
 
     def scan_once(self, btc_macro: str):
         self.state.diagnostics = ScanDiagnostics()
+        self.state.scan_cycle_started_at = datetime.now().astimezone()
         self.risk_mgr.sync_open_count(get_stats()["open"])
         # Reset seen_ob each cycle — cooldowns (cd_ob_e) already prevent re-signals
         with self.state._ob_lock:

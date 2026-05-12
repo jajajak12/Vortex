@@ -8,6 +8,7 @@ Migration: auto-imports existing trades.json on first run, then renames it.
 import json
 import sqlite3
 from contextlib import contextmanager
+from datetime import datetime, timezone
 from pathlib import Path
 
 from vortex_logger import get_logger
@@ -47,6 +48,35 @@ CREATE INDEX IF NOT EXISTS idx_time          ON trades(time DESC);
 CREATE INDEX IF NOT EXISTS idx_status        ON trades(status);
 """
 
+_BINANCE_DEMO_EXECUTION_SCHEMA = """
+CREATE TABLE IF NOT EXISTS binance_demo_executions (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    vortex_trade_id INTEGER UNIQUE NOT NULL,
+    symbol TEXT NOT NULL,
+    strategy TEXT NOT NULL,
+    direction TEXT NOT NULL,
+    quantity REAL,
+    notional REAL,
+    risk_usd REAL,
+    entry_order_id TEXT,
+    tp_order_id TEXT,
+    sl_order_id TEXT,
+    status TEXT,
+    error TEXT,
+    created_at TEXT,
+    updated_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_binance_demo_executions_status
+    ON binance_demo_executions(status);
+CREATE INDEX IF NOT EXISTS idx_binance_demo_executions_symbol
+    ON binance_demo_executions(symbol);
+CREATE TABLE IF NOT EXISTS binance_demo_execution_state (
+    key TEXT PRIMARY KEY,
+    value TEXT NOT NULL,
+    updated_at TEXT NOT NULL
+);
+"""
+
 
 @contextmanager
 def _conn():
@@ -69,6 +99,15 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
     return dict(row)
 
 
+def _utc_now_iso() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _ensure_binance_demo_execution_schema() -> None:
+    with _conn() as con:
+        con.executescript(_BINANCE_DEMO_EXECUTION_SCHEMA)
+
+
 def _migrate_schema():
     """ALTER TABLE to add new columns to existing DBs without data loss."""
     with _conn() as con:
@@ -89,6 +128,7 @@ def init_db():
     """Create schema, enable WAL, run migration from trades.json if needed."""
     with _conn() as con:
         con.executescript(_SCHEMA)
+        con.executescript(_BINANCE_DEMO_EXECUTION_SCHEMA)
     _migrate_schema()
     _migrate_from_json()
     purge_duplicates()
@@ -334,3 +374,163 @@ def get_stats() -> dict:
         "open":        total_open,
         "by_strategy": by_strategy,
     }
+
+
+def binance_demo_execution_table_exists() -> bool:
+    _ensure_binance_demo_execution_schema()
+    with _conn() as con:
+        row = con.execute(
+            "SELECT 1 FROM sqlite_master WHERE type='table' AND name='binance_demo_executions'"
+        ).fetchone()
+    return row is not None
+
+
+def get_binance_demo_execution(vortex_trade_id: int) -> dict | None:
+    _ensure_binance_demo_execution_schema()
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM binance_demo_executions WHERE vortex_trade_id=?",
+            (vortex_trade_id,),
+        ).fetchone()
+    return _row_to_dict(row) if row else None
+
+
+def count_binance_demo_executions() -> int:
+    _ensure_binance_demo_execution_schema()
+    with _conn() as con:
+        row = con.execute("SELECT COUNT(*) FROM binance_demo_executions").fetchone()
+    return int(row[0] if row else 0)
+
+
+def list_recent_binance_demo_executions(limit: int = 20) -> list[dict]:
+    _ensure_binance_demo_execution_schema()
+    with _conn() as con:
+        rows = con.execute(
+            "SELECT * FROM binance_demo_executions ORDER BY id DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def upsert_binance_demo_execution(payload: dict) -> dict:
+    _ensure_binance_demo_execution_schema()
+    now = _utc_now_iso()
+    vortex_trade_id = int(payload["vortex_trade_id"])
+    existing = get_binance_demo_execution(vortex_trade_id)
+
+    columns = [
+        "vortex_trade_id",
+        "symbol",
+        "strategy",
+        "direction",
+        "quantity",
+        "notional",
+        "risk_usd",
+        "entry_order_id",
+        "tp_order_id",
+        "sl_order_id",
+        "status",
+        "error",
+    ]
+
+    if existing is None:
+        row = {key: payload.get(key) for key in columns}
+        row["created_at"] = payload.get("created_at") or now
+        row["updated_at"] = payload.get("updated_at") or now
+        with _conn() as con:
+            con.execute(
+                """
+                INSERT INTO binance_demo_executions (
+                    vortex_trade_id, symbol, strategy, direction,
+                    quantity, notional, risk_usd,
+                    entry_order_id, tp_order_id, sl_order_id,
+                    status, error, created_at, updated_at
+                ) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)
+                """,
+                (
+                    row["vortex_trade_id"],
+                    row["symbol"],
+                    row["strategy"],
+                    row["direction"],
+                    row["quantity"],
+                    row["notional"],
+                    row["risk_usd"],
+                    row["entry_order_id"],
+                    row["tp_order_id"],
+                    row["sl_order_id"],
+                    row["status"],
+                    row["error"],
+                    row["created_at"],
+                    row["updated_at"],
+                ),
+            )
+        return get_binance_demo_execution(vortex_trade_id) or row
+
+    merged = dict(existing)
+    for key in columns:
+        if key in payload:
+            merged[key] = payload[key]
+    merged["updated_at"] = payload.get("updated_at") or now
+
+    with _conn() as con:
+        con.execute(
+            """
+            UPDATE binance_demo_executions
+            SET symbol=?,
+                strategy=?,
+                direction=?,
+                quantity=?,
+                notional=?,
+                risk_usd=?,
+                entry_order_id=?,
+                tp_order_id=?,
+                sl_order_id=?,
+                status=?,
+                error=?,
+                updated_at=?
+            WHERE vortex_trade_id=?
+            """,
+            (
+                merged["symbol"],
+                merged["strategy"],
+                merged["direction"],
+                merged["quantity"],
+                merged["notional"],
+                merged["risk_usd"],
+                merged["entry_order_id"],
+                merged["tp_order_id"],
+                merged["sl_order_id"],
+                merged["status"],
+                merged["error"],
+                merged["updated_at"],
+                vortex_trade_id,
+            ),
+        )
+    return get_binance_demo_execution(vortex_trade_id) or merged
+
+
+def set_binance_demo_auto_startup(started_at: str | None = None) -> str:
+    _ensure_binance_demo_execution_schema()
+    value = started_at or _utc_now_iso()
+    updated_at = _utc_now_iso()
+    with _conn() as con:
+        con.execute(
+            """
+            INSERT INTO binance_demo_execution_state (key, value, updated_at)
+            VALUES ('last_auto_startup_at', ?, ?)
+            ON CONFLICT(key) DO UPDATE SET
+                value=excluded.value,
+                updated_at=excluded.updated_at
+            """,
+            (value, updated_at),
+        )
+    return value
+
+
+def get_binance_demo_auto_startup() -> str | None:
+    _ensure_binance_demo_execution_schema()
+    with _conn() as con:
+        row = con.execute(
+            "SELECT value FROM binance_demo_execution_state WHERE key='last_auto_startup_at'"
+        ).fetchone()
+    return str(row["value"]) if row else None

@@ -195,8 +195,10 @@ class ScanState:
     # Shared services (thread-safe internally or stateless)
     signal_handler: object = None   # SignalHandler
     risk_mgr:       object = None   # RiskManager
+    auto_demo_executor: object = None
     rate_mon: SignalRateMonitor = field(default_factory=SignalRateMonitor)
     diagnostics: ScanDiagnostics = field(default_factory=ScanDiagnostics)
+    scan_cycle_started_at: object = None
 
     # Lock for seen_ob compatibility with warmup and older callers.
     _ob_lock: threading.Lock = field(default_factory=threading.Lock)
