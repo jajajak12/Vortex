@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from decimal import Decimal, ROUND_DOWN
 import os
 import threading
@@ -10,7 +10,18 @@ from typing import Any
 from urllib.parse import urlparse
 
 import db
-from exchange.binance_demo import BinanceDemoAdapter, DEFAULT_BASE_URL, load_dotenv_file
+from exchange.binance_demo import (
+    BinanceApiError,
+    BinanceDemoAdapter,
+    DEFAULT_BASE_URL,
+    decimal_to_str,
+    load_dotenv_file,
+    position_amt_from_payload,
+    position_direction_from_amt,
+    rate_limit_cooldown_until_from_error,
+    to_decimal,
+    verify_protection_orders,
+)
 from risk_manager import RiskManager
 from vortex_logger import get_logger
 
@@ -19,6 +30,9 @@ ALLOWED_SYMBOLS = {"BTCUSDT", "ETHUSDT", "BNBUSDT", "SOLUSDT"}
 DEFAULT_ALLOWED_STRATEGIES = ("S5", "S7", "S8", "S9", "S10")
 DEFAULT_MAX_NOTIONAL_USDT = Decimal("5000")
 ZERO_EPSILON = Decimal("0.00000001")
+ACTIVE_MAPPING_STATUSES = {"ENTRY_PLACED", "PROTECTION_PLACED", "EXECUTED"}
+RATE_LIMIT_REJECT_STATUS = "SKIPPED_RATE_LIMIT_COOLDOWN"
+RATE_LIMIT_FAILED_CLEANUP_STATUS = "FAILED_CLEANUP_RATE_LIMITED"
 
 
 def _parse_bool(value: str | None, *, default: bool = False) -> bool:
@@ -34,19 +48,6 @@ def _parse_allowed_strategies(raw: str | None) -> tuple[str, ...]:
     return tuple(dict.fromkeys(items)) or DEFAULT_ALLOWED_STRATEGIES
 
 
-def _to_decimal(value: Any, *, default: str = "0") -> Decimal:
-    if value is None or value == "":
-        return Decimal(default)
-    return Decimal(str(value))
-
-
-def _decimal_to_str(value: Decimal) -> str:
-    normalized = format(value.normalize(), "f")
-    if "." in normalized:
-        normalized = normalized.rstrip("0").rstrip(".")
-    return normalized or "0"
-
-
 def _round_down_to_increment(value: Decimal, increment: Decimal) -> Decimal:
     return (value / increment).to_integral_value(rounding=ROUND_DOWN) * increment
 
@@ -59,16 +60,32 @@ def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
 
 
+def _parse_iso_datetime(value: str | None) -> datetime | None:
+    if not value:
+        return None
+    normalized = str(value).strip()
+    if not normalized:
+        return None
+    try:
+        parsed = datetime.fromisoformat(normalized.replace("Z", "+00:00"))
+    except ValueError:
+        return None
+    if parsed.tzinfo is None:
+        parsed = parsed.replace(tzinfo=timezone.utc)
+    return parsed.astimezone(timezone.utc)
+
+
+@dataclass(frozen=True)
+class RateLimitCooldownState:
+    active: bool
+    cooldown_until: datetime | None
+    cooldown_until_raw: str | None
+    last_error: str | None
+    last_seen_at: str | None
+
+
 def _parse_trade_time(value: Any) -> datetime:
     return datetime.strptime(str(value), "%Y-%m-%d %H:%M:%S").replace(tzinfo=timezone.utc)
-
-
-def _position_amt_from_payload(position_payload: Any, symbol: str) -> Decimal:
-    rows = position_payload if isinstance(position_payload, list) else [position_payload]
-    for row in rows or []:
-        if str(row.get("symbol", "")).upper() == symbol:
-            return _to_decimal(row.get("positionAmt", "0"))
-    return Decimal("0")
 
 
 def _base_url_host(base_url: str) -> str:
@@ -98,7 +115,7 @@ class BinanceDemoExecutionConfig:
         load_dotenv_file()
         base_url = (os.getenv("BINANCE_FUTURES_TESTNET_BASE_URL") or DEFAULT_BASE_URL).strip().rstrip("/")
         max_notional_raw = (os.getenv("BINANCE_DEMO_MAX_NOTIONAL_USDT") or "").strip()
-        max_notional = _to_decimal(max_notional_raw or DEFAULT_MAX_NOTIONAL_USDT)
+        max_notional = to_decimal(max_notional_raw or DEFAULT_MAX_NOTIONAL_USDT)
         if max_notional <= 0:
             max_notional = DEFAULT_MAX_NOTIONAL_USDT
         if max_notional > DEFAULT_MAX_NOTIONAL_USDT:
@@ -239,6 +256,21 @@ class BinanceDemoAutoExecutor:
             self._record_execution_row(trade, status="REJECTED_VALIDATION", error="base_url_looks_like_mainnet")
             return
 
+        cooldown = self.get_rate_limit_cooldown_state()
+        if cooldown.active:
+            cooldown_until_text = cooldown.cooldown_until_raw or "<unknown>"
+            self.log.warning(
+                "[BINANCE_DEMO] auto_execution_skipped trade_id=%s reason=rate_limit_cooldown cooldown_until=%s",
+                trade_id,
+                cooldown_until_text,
+            )
+            self._record_execution_row(
+                trade,
+                status=RATE_LIMIT_REJECT_STATUS,
+                error=f"binance_rate_limit_cooldown_until={cooldown_until_text}",
+            )
+            return
+
         self._execute_trade(trade)
 
     def _execute_trade(self, trade: dict[str, Any]) -> None:
@@ -251,7 +283,11 @@ class BinanceDemoAutoExecutor:
         entry_order: dict[str, Any] | None = None
         tp_order: dict[str, Any] | None = None
         sl_order: dict[str, Any] | None = None
-        cleanup_error: str | None = None
+        quantity = Decimal("0")
+        rounded_tp = Decimal("0")
+        rounded_sl = Decimal("0")
+        exit_side = ""
+        entry_executed = False
 
         try:
             ticker = adapter.ticker_price(symbol)
@@ -260,25 +296,29 @@ class BinanceDemoAutoExecutor:
             open_orders = adapter.get_open_orders(symbol)
             open_algo_orders = adapter.get_open_algo_orders(symbol)
 
-            position_amt = _position_amt_from_payload(position_payload, symbol)
-            if abs(position_amt) > ZERO_EPSILON:
-                self._record_execution_row(trade, status="REJECTED_VALIDATION", error="symbol_already_has_position")
-                self.log.warning("[BINANCE_DEMO] auto_execution_rejected trade_id=%s reason=existing_position", trade_id)
-                return
-
-            existing_order_count = len(open_orders or []) + len(open_algo_orders or [])
-            if existing_order_count > 0:
-                self._record_execution_row(trade, status="REJECTED_VALIDATION", error="symbol_already_has_orders")
+            active_symbol_mappings = self._list_active_symbol_mappings(symbol, exclude_trade_id=trade_id)
+            eligibility = self._evaluate_symbol_eligibility(
+                symbol=symbol,
+                trade_direction=direction,
+                position_payload=position_payload,
+                open_orders=open_orders,
+                open_algo_orders=open_algo_orders,
+                active_symbol_mappings=active_symbol_mappings,
+            )
+            if not eligibility["allowed"]:
+                error = str(eligibility["reason"])
+                self._record_execution_row(trade, status="REJECTED_VALIDATION", error=error)
                 self.log.warning(
-                    "[BINANCE_DEMO] auto_execution_rejected trade_id=%s reason=existing_orders count=%s",
+                    "[BINANCE_DEMO] auto_execution_rejected trade_id=%s symbol=%s reason=%s",
                     trade_id,
-                    existing_order_count,
+                    symbol,
+                    error,
                 )
                 return
 
-            current_price = _to_decimal(ticker["price"])
-            sl = _to_decimal(trade["sl"])
-            tp = _to_decimal(trade["tp"])
+            current_price = to_decimal(ticker["price"])
+            sl = to_decimal(trade["sl"])
+            tp = to_decimal(trade["tp"])
             if direction == "LONG":
                 if sl >= current_price:
                     self._record_execution_row(trade, status="REJECTED_VALIDATION", error="long_sl_not_below_market")
@@ -308,10 +348,10 @@ class BinanceDemoAutoExecutor:
                 return
 
             risk_usd = self._risk_usd_for_trade(trade)
-            step_size = _to_decimal(filters["stepSize"])
-            tick_size = _to_decimal(filters["tickSize"])
-            min_qty = _to_decimal(filters["minQty"])
-            min_notional = _to_decimal(filters["minNotional"])
+            step_size = to_decimal(filters["stepSize"])
+            tick_size = to_decimal(filters["tickSize"])
+            min_qty = to_decimal(filters["minQty"])
+            min_notional = to_decimal(filters["minNotional"])
 
             raw_qty = risk_usd / risk_per_unit
             rounded_qty = _round_down_to_increment(raw_qty, step_size)
@@ -345,9 +385,10 @@ class BinanceDemoAutoExecutor:
             entry_order = adapter.place_market_order(
                 symbol=symbol,
                 side=entry_side,
-                quantity=_decimal_to_str(quantity),
+                quantity=decimal_to_str(quantity),
                 reduce_only=False,
             )
+            entry_executed = True
             self._record_execution_row(
                 trade,
                 status="ENTRY_PLACED",
@@ -360,15 +401,15 @@ class BinanceDemoAutoExecutor:
             tp_order = adapter.place_take_profit_market_order(
                 symbol=symbol,
                 side=exit_side,
-                stop_price=_decimal_to_str(rounded_tp),
-                quantity=_decimal_to_str(quantity),
+                stop_price=decimal_to_str(rounded_tp),
+                quantity=decimal_to_str(quantity),
                 reduce_only=True,
             )
             sl_order = adapter.place_stop_market_order(
                 symbol=symbol,
                 side=exit_side,
-                stop_price=_decimal_to_str(rounded_sl),
-                quantity=_decimal_to_str(quantity),
+                stop_price=decimal_to_str(rounded_sl),
+                quantity=decimal_to_str(quantity),
                 reduce_only=True,
             )
             self._record_execution_row(
@@ -381,6 +422,22 @@ class BinanceDemoAutoExecutor:
                 tp_order_id=str(tp_order.get("algoId")),
                 sl_order_id=str(sl_order.get("algoId")),
             )
+
+            verification = self._verify_live_protection(
+                adapter=adapter,
+                symbol=symbol,
+                exit_side=exit_side,
+                quantity=quantity,
+                rounded_tp=rounded_tp,
+                rounded_sl=rounded_sl,
+                tick_size=tick_size,
+                step_size=step_size,
+                tp_order_id=str(tp_order.get("algoId")),
+                sl_order_id=str(sl_order.get("algoId")),
+            )
+            if not verification.is_protected:
+                raise RuntimeError(str(verification.error_code or "protection_verification_failed"))
+
             self._record_execution_row(
                 trade,
                 status="EXECUTED",
@@ -395,11 +452,81 @@ class BinanceDemoAutoExecutor:
                 "[BINANCE_DEMO] auto_execution_succeeded trade_id=%s symbol=%s quantity=%s notional=%s",
                 trade_id,
                 symbol,
-                _decimal_to_str(quantity),
-                _decimal_to_str(notional),
+                decimal_to_str(quantity),
+                decimal_to_str(notional),
+            )
+        except BinanceApiError as exc:
+            error_text = self._format_rate_limit_error(exc)
+            if exc.is_rate_limit:
+                cooldown = self._activate_rate_limit_cooldown(exc)
+                cleanup_error = self._cleanup_new_leg(
+                    adapter=adapter,
+                    symbol=symbol,
+                    exit_side=exit_side,
+                    quantity=quantity,
+                    tp_order_id=str(tp_order.get("algoId")) if tp_order else None,
+                    sl_order_id=str(sl_order.get("algoId")) if sl_order else None,
+                    entry_executed=entry_executed,
+                    allow_cleanup=False,
+                )
+                if cleanup_error:
+                    error_text = f"{error_text} | cleanup={cleanup_error}"
+                error_text = (
+                    f"{error_text} | cooldown_until={cooldown.cooldown_until_raw or '<unknown>'}"
+                    " | manual_review_required=true"
+                )
+                self._record_execution_row(
+                    trade,
+                    status="REJECTED_VALIDATION" if not entry_executed else RATE_LIMIT_FAILED_CLEANUP_STATUS,
+                    error=error_text,
+                    entry_order_id=str(entry_order.get("orderId")) if entry_order else None,
+                    tp_order_id=str(tp_order.get("algoId")) if tp_order else None,
+                    sl_order_id=str(sl_order.get("algoId")) if sl_order else None,
+                )
+                self.log.error(
+                    "[BINANCE_DEMO] rate_limit_fail_closed trade_id=%s symbol=%s entry_executed=%s cooldown_until=%s error=%s",
+                    trade_id,
+                    symbol,
+                    _fmt_bool(entry_executed),
+                    cooldown.cooldown_until_raw,
+                    error_text,
+                )
+                return
+
+            cleanup_error = self._cleanup_new_leg(
+                adapter=adapter,
+                symbol=symbol,
+                exit_side=exit_side,
+                quantity=quantity,
+                tp_order_id=str(tp_order.get("algoId")) if tp_order else None,
+                sl_order_id=str(sl_order.get("algoId")) if sl_order else None,
+                entry_executed=entry_executed,
+            )
+            if cleanup_error:
+                error_text = f"{error_text} | cleanup={cleanup_error}"
+            self._record_execution_row(
+                trade,
+                status="FAILED_CLEANED_UP",
+                error=error_text,
+                entry_order_id=str(entry_order.get("orderId")) if entry_order else None,
+                tp_order_id=str(tp_order.get("algoId")) if tp_order else None,
+                sl_order_id=str(sl_order.get("algoId")) if sl_order else None,
+            )
+            self.log.error(
+                "[BINANCE_DEMO] auto_execution_cleanup trade_id=%s error=%s",
+                trade_id,
+                error_text,
             )
         except Exception as exc:
-            cleanup_error = self._cleanup_symbol(adapter, symbol)
+            cleanup_error = self._cleanup_new_leg(
+                adapter=adapter,
+                symbol=symbol,
+                exit_side=exit_side,
+                quantity=quantity,
+                tp_order_id=str(tp_order.get("algoId")) if tp_order else None,
+                sl_order_id=str(sl_order.get("algoId")) if sl_order else None,
+                entry_executed=entry_executed,
+            )
             error_text = str(exc)
             if cleanup_error:
                 error_text = f"{error_text} | cleanup={cleanup_error}"
@@ -417,48 +544,167 @@ class BinanceDemoAutoExecutor:
                 error_text,
             )
 
-    def _cleanup_symbol(self, adapter: BinanceDemoAdapter, symbol: str) -> str | None:
+    def _list_active_symbol_mappings(self, symbol: str, *, exclude_trade_id: int | None = None) -> list[dict[str, Any]]:
+        rows = db.list_binance_demo_executions(symbol=symbol)
+        active_rows = []
+        for row in rows:
+            if exclude_trade_id is not None and int(row["vortex_trade_id"]) == int(exclude_trade_id):
+                continue
+            if str(row.get("status") or "").upper() in ACTIVE_MAPPING_STATUSES:
+                trade = db.get_trade(int(row["vortex_trade_id"]))
+                if trade and str(trade.get("status")) == "OPEN":
+                    active_rows.append(row)
+        return active_rows
+
+    def _active_mapping_direction(self, active_symbol_mappings: list[dict[str, Any]]) -> str | None:
+        directions = {str(row.get("direction") or "").upper() for row in active_symbol_mappings if row.get("direction")}
+        if not directions:
+            return None
+        if len(directions) > 1:
+            return "MIXED"
+        return next(iter(directions))
+
+    def _evaluate_symbol_eligibility(
+        self,
+        *,
+        symbol: str,
+        trade_direction: str,
+        position_payload: Any,
+        open_orders: list[dict[str, Any]] | None,
+        open_algo_orders: list[dict[str, Any]] | None,
+        active_symbol_mappings: list[dict[str, Any]],
+    ) -> dict[str, Any]:
+        position_amt = position_amt_from_payload(position_payload, symbol)
+        remote_direction = position_direction_from_amt(position_amt)
+        active_direction = self._active_mapping_direction(active_symbol_mappings)
+        has_orders = bool((open_orders or []) or (open_algo_orders or []))
+
+        if active_direction == "MIXED":
+            return {"allowed": False, "reason": "inconsistent_mapping_directions"}
+
+        if has_orders and remote_direction == "NONE":
+            return {"allowed": False, "reason": "symbol_has_orphan_remote_orders"}
+
+        if remote_direction != "NONE" and active_direction is None:
+            return {"allowed": False, "reason": "symbol_has_unmapped_remote_position"}
+
+        if remote_direction != "NONE" and active_direction not in {None, remote_direction}:
+            return {"allowed": False, "reason": "inconsistent_mapping_directions"}
+
+        if remote_direction != "NONE" and remote_direction != trade_direction:
+            return {"allowed": False, "reason": "symbol_has_opposite_remote_direction"}
+
+        if active_direction not in {None, trade_direction}:
+            return {"allowed": False, "reason": "symbol_has_opposite_active_mapped_direction"}
+
+        return {"allowed": True, "reason": "eligible"}
+
+    def _verify_live_protection(
+        self,
+        *,
+        adapter: BinanceDemoAdapter,
+        symbol: str,
+        exit_side: str,
+        quantity: Decimal,
+        rounded_tp: Decimal,
+        rounded_sl: Decimal,
+        tick_size: Decimal,
+        step_size: Decimal,
+        tp_order_id: str,
+        sl_order_id: str,
+    ):
+        verification = verify_protection_orders(
+            algo_orders=adapter.get_open_algo_orders(symbol) or [],
+            tp_order_id=tp_order_id,
+            sl_order_id=sl_order_id,
+            expected_side=exit_side,
+            expected_quantity=quantity,
+            expected_tp_trigger=rounded_tp,
+            expected_sl_trigger=rounded_sl,
+            qty_tolerance=step_size,
+            price_tolerance=tick_size,
+        )
+        return verification
+
+    def _cleanup_new_leg(
+        self,
+        *,
+        adapter: BinanceDemoAdapter,
+        symbol: str,
+        exit_side: str,
+        quantity: Decimal,
+        tp_order_id: str | None,
+        sl_order_id: str | None,
+        entry_executed: bool,
+        allow_cleanup: bool = True,
+    ) -> str | None:
+        if not allow_cleanup:
+            return "cleanup_skipped_due_to_rate_limit_manual_review_required"
         errors: list[str] = []
-        try:
-            for order in adapter.get_open_orders(symbol) or []:
-                order_id = order.get("orderId")
-                if order_id is not None:
-                    adapter.cancel_order(symbol, order_id)
-        except Exception as exc:
-            errors.append(f"cancel_order={exc}")
+        for algo_id in (tp_order_id, sl_order_id):
+            if not algo_id:
+                continue
+            try:
+                adapter.cancel_algo_order(algo_id)
+            except Exception as exc:
+                errors.append(f"cancel_algo_order[{algo_id}]={exc}")
 
-        try:
-            for algo_order in adapter.get_open_algo_orders(symbol) or []:
-                algo_id = algo_order.get("algoId")
-                if algo_id is not None:
-                    adapter.cancel_algo_order(algo_id)
-        except Exception as exc:
-            errors.append(f"cancel_algo_order={exc}")
-
-        try:
-            position_payload = adapter.get_position_risk(symbol)
-            position_amt = _position_amt_from_payload(position_payload, symbol)
-            if abs(position_amt) > ZERO_EPSILON:
+        if entry_executed and quantity > 0 and exit_side:
+            try:
                 adapter.place_market_order(
                     symbol=symbol,
-                    side="SELL" if position_amt > 0 else "BUY",
-                    quantity=_decimal_to_str(abs(position_amt)),
+                    side=exit_side,
+                    quantity=decimal_to_str(quantity),
                     reduce_only=True,
                 )
-        except Exception as exc:
-            errors.append(f"close_position={exc}")
+            except Exception as exc:
+                errors.append(f"close_leg={exc}")
 
         if not errors:
             return None
         return "; ".join(errors)
 
+    def get_rate_limit_cooldown_state(self, *, now: datetime | None = None) -> RateLimitCooldownState:
+        raw = db.get_binance_demo_rate_limit_state()
+        now = now or datetime.now(timezone.utc)
+        cooldown_until = _parse_iso_datetime(raw.get("binance_demo_rate_limit_cooldown_until"))
+        return RateLimitCooldownState(
+            active=bool(cooldown_until and cooldown_until > now),
+            cooldown_until=cooldown_until,
+            cooldown_until_raw=cooldown_until.isoformat() if cooldown_until else None,
+            last_error=raw.get("binance_demo_rate_limit_last_error") or None,
+            last_seen_at=raw.get("binance_demo_rate_limit_last_seen_at") or None,
+        )
+
+    def _activate_rate_limit_cooldown(self, error: BinanceApiError) -> RateLimitCooldownState:
+        now = datetime.now(timezone.utc)
+        cooldown_until = rate_limit_cooldown_until_from_error(error, now=now)
+        db.set_binance_demo_rate_limit_state(
+            cooldown_until=cooldown_until.isoformat(),
+            last_error=self._format_rate_limit_error(error),
+            last_seen_at=now.isoformat(),
+        )
+        return self.get_rate_limit_cooldown_state(now=now)
+
+    def _format_rate_limit_error(self, error: BinanceApiError) -> str:
+        parts = []
+        if error.status_code is not None:
+            parts.append(f"status={error.status_code}")
+        if error.binance_code is not None:
+            parts.append(f"code={error.binance_code}")
+        parts.append(f"path={error.path}")
+        parts.append(f"message={error.message}")
+        if error.banned_until is not None:
+            parts.append(f"banned_until={error.banned_until.isoformat()}")
+        return "binance_rate_limit " + " ".join(parts)
+
     def _risk_usd_for_trade(self, trade: dict[str, Any]) -> Decimal:
-        stored_risk = _to_decimal(trade.get("risk_usd"), default="0")
+        stored_risk = to_decimal(trade.get("risk_usd"), default="0")
         if stored_risk > 0:
             return stored_risk
         manager = RiskManager()
-        current_equity = _to_decimal(manager.get_current_equity())
-        return _to_decimal(min(float(current_equity) * 0.02, 500.0))
+        current_equity = to_decimal(manager.get_current_equity())
+        return to_decimal(min(float(current_equity) * 0.02, 500.0))
 
     def _record_execution_row(
         self,

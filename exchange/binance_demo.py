@@ -4,7 +4,11 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import time
+from dataclasses import dataclass
+from datetime import datetime, timedelta, timezone
+from decimal import Decimal
 from pathlib import Path
 from typing import Any
 from urllib.parse import urlencode, urlparse
@@ -17,12 +21,314 @@ from vortex_logger import get_logger
 DEFAULT_BASE_URL = "https://demo-fapi.binance.com"
 DEFAULT_DOTENV_PATH = Path(__file__).resolve().parents[1] / ".env"
 RECV_WINDOW_MS = 5000
+ZERO_EPSILON = Decimal("0.00000001")
+RATE_LIMIT_FALLBACK_COOLDOWN = timedelta(minutes=15)
+BANNED_UNTIL_BUFFER = timedelta(seconds=60)
 
 
 def _parse_bool(value: str | None, *, default: bool = False) -> bool:
     if value is None:
         return default
     return value.strip().lower() in {"1", "true", "yes", "on"}
+
+
+def to_decimal(value: Any, *, default: str = "0") -> Decimal:
+    if value is None or value == "":
+        return Decimal(default)
+    return Decimal(str(value))
+
+
+def decimal_to_str(value: Decimal) -> str:
+    normalized = format(value.normalize(), "f")
+    if "." in normalized:
+        normalized = normalized.rstrip("0").rstrip(".")
+    return normalized or "0"
+
+
+def find_position_row(position_payload: Any, symbol: str) -> dict[str, Any] | None:
+    rows = position_payload if isinstance(position_payload, list) else [position_payload]
+    for row in rows or []:
+        if str(row.get("symbol", "")).upper() == symbol.upper():
+            return row
+    return None
+
+
+def position_amt_from_payload(position_payload: Any, symbol: str) -> Decimal:
+    row = find_position_row(position_payload, symbol)
+    if not row:
+        return Decimal("0")
+    return to_decimal(row.get("positionAmt", "0"))
+
+
+def position_direction_from_amt(position_amt: Decimal) -> str:
+    if position_amt > ZERO_EPSILON:
+        return "LONG"
+    if position_amt < -ZERO_EPSILON:
+        return "SHORT"
+    return "NONE"
+
+
+def order_type(order: dict[str, Any]) -> str:
+    return str(
+        order.get("orderType")
+        or order.get("type")
+        or order.get("strategyType")
+        or order.get("algoType")
+        or ""
+    ).upper()
+
+
+def is_tp_algo_order(order: dict[str, Any]) -> bool:
+    return "TAKE_PROFIT" in order_type(order)
+
+
+def is_sl_algo_order(order: dict[str, Any]) -> bool:
+    normalized = order_type(order)
+    return "STOP" in normalized and "TAKE_PROFIT" not in normalized
+
+
+def order_reduce_only(order: dict[str, Any]) -> bool:
+    value = order.get("reduceOnly")
+    if isinstance(value, bool):
+        return value
+    return str(value).strip().lower() == "true"
+
+
+def order_trigger_price(order: dict[str, Any]) -> Decimal:
+    return to_decimal(order.get("triggerPrice") or order.get("stopPrice") or order.get("activatePrice") or "0")
+
+
+def order_quantity(order: dict[str, Any]) -> Decimal:
+    return to_decimal(order.get("quantity") or order.get("origQty") or order.get("executedQty") or "0")
+
+
+def order_identifier(order: dict[str, Any]) -> str:
+    value = order.get("algoId")
+    if value is None or value == "":
+        value = order.get("orderId")
+    return str(value or "")
+
+
+@dataclass(frozen=True)
+class ProtectionVerificationResult:
+    protection_status: str
+    error_code: str | None
+    tp_order_live: bool
+    sl_order_live: bool
+    tp_reduce_only_ok: bool
+    sl_reduce_only_ok: bool
+    tp_side_ok: bool
+    sl_side_ok: bool
+    tp_qty_ok: bool
+    sl_qty_ok: bool
+    tp_type_ok: bool
+    sl_type_ok: bool
+    tp_trigger_ok: bool
+    sl_trigger_ok: bool
+
+    @property
+    def is_protected(self) -> bool:
+        return self.protection_status == "PROTECTED" and self.error_code is None
+
+
+@dataclass(frozen=True)
+class BinanceApiError(RuntimeError):
+    status_code: int | None
+    binance_code: int | None
+    message: str
+    path: str
+    response_body: str | None = None
+    banned_until: datetime | None = None
+
+    def __str__(self) -> str:
+        parts = [f"Binance API error path={self.path}"]
+        if self.status_code is not None:
+            parts.append(f"status={self.status_code}")
+        if self.binance_code is not None:
+            parts.append(f"code={self.binance_code}")
+        parts.append(f"message={self.message}")
+        if self.banned_until is not None:
+            parts.append(f"banned_until={self.banned_until.isoformat()}")
+        return " ".join(parts)
+
+    @property
+    def is_rate_limit(self) -> bool:
+        lowered = self.message.lower()
+        return (
+            self.status_code == 418
+            or self.binance_code == -1003
+            or "too many requests" in lowered
+            or "way too many requests" in lowered
+            or "banned until" in lowered
+        )
+
+
+def parse_rate_limit_banned_until(message: str, *, now: datetime | None = None) -> datetime | None:
+    now = now or datetime.now(timezone.utc)
+    patterns = (
+        r"banned until\s+(\d{13})",
+        r"banned until\s+(\d{10})",
+        r"banned until\s+([0-9]{4}-[0-9]{2}-[0-9]{2}[ t][0-9:.]+(?:z|[+-][0-9:]+)?)",
+    )
+    lowered = message.lower()
+    if "banned until" not in lowered:
+        return None
+
+    for pattern in patterns:
+        match = re.search(pattern, message, flags=re.IGNORECASE)
+        if not match:
+            continue
+        raw = match.group(1).strip()
+        try:
+            if raw.isdigit():
+                timestamp = int(raw)
+                if len(raw) >= 13:
+                    return datetime.fromtimestamp(timestamp / 1000, tz=timezone.utc)
+                return datetime.fromtimestamp(timestamp, tz=timezone.utc)
+            normalized = raw.replace("Z", "+00:00").replace("z", "+00:00").replace(" ", "T")
+            parsed = datetime.fromisoformat(normalized)
+            if parsed.tzinfo is None:
+                parsed = parsed.replace(tzinfo=timezone.utc)
+            return parsed.astimezone(timezone.utc)
+        except ValueError:
+            continue
+
+    numeric_matches = re.findall(r"\d{10,13}", message)
+    for raw in numeric_matches:
+        try:
+            timestamp = int(raw)
+            candidate = datetime.fromtimestamp(
+                timestamp / 1000 if len(raw) >= 13 else timestamp,
+                tz=timezone.utc,
+            )
+        except (OSError, OverflowError, ValueError):
+            continue
+        if candidate >= now - timedelta(minutes=5):
+            return candidate
+    return None
+
+
+def rate_limit_cooldown_until_from_error(
+    error: BinanceApiError,
+    *,
+    now: datetime | None = None,
+) -> datetime:
+    now = now or datetime.now(timezone.utc)
+    if error.banned_until is not None:
+        return error.banned_until + BANNED_UNTIL_BUFFER
+    return now + RATE_LIMIT_FALLBACK_COOLDOWN
+
+
+def verify_protection_orders(
+    *,
+    algo_orders: list[dict[str, Any]] | None,
+    tp_order_id: str | None,
+    sl_order_id: str | None,
+    expected_side: str,
+    expected_quantity: Decimal,
+    expected_tp_trigger: Decimal,
+    expected_sl_trigger: Decimal,
+    qty_tolerance: Decimal,
+    price_tolerance: Decimal,
+) -> ProtectionVerificationResult:
+    orders_by_id = {order_identifier(order): order for order in (algo_orders or [])}
+    tp_order = orders_by_id.get(str(tp_order_id or ""))
+    sl_order = orders_by_id.get(str(sl_order_id or ""))
+
+    tp_live = tp_order is not None
+    sl_live = sl_order is not None
+    if not tp_live and not sl_live:
+        return ProtectionVerificationResult(
+            protection_status="TP_SL_MISSING",
+            error_code="protection_verification_failed_tp_sl_missing",
+            tp_order_live=False,
+            sl_order_live=False,
+            tp_reduce_only_ok=False,
+            sl_reduce_only_ok=False,
+            tp_side_ok=False,
+            sl_side_ok=False,
+            tp_qty_ok=False,
+            sl_qty_ok=False,
+            tp_type_ok=False,
+            sl_type_ok=False,
+            tp_trigger_ok=False,
+            sl_trigger_ok=False,
+        )
+    if not tp_live:
+        return ProtectionVerificationResult(
+            protection_status="TP_MISSING",
+            error_code="protection_verification_failed_tp_missing",
+            tp_order_live=False,
+            sl_order_live=True,
+            tp_reduce_only_ok=False,
+            sl_reduce_only_ok=order_reduce_only(sl_order),
+            tp_side_ok=False,
+            sl_side_ok=str(sl_order.get("side") or "").upper() == expected_side,
+            tp_qty_ok=False,
+            sl_qty_ok=abs(order_quantity(sl_order) - expected_quantity) <= qty_tolerance,
+            tp_type_ok=False,
+            sl_type_ok=is_sl_algo_order(sl_order),
+            tp_trigger_ok=False,
+            sl_trigger_ok=abs(order_trigger_price(sl_order) - expected_sl_trigger) <= price_tolerance,
+        )
+    if not sl_live:
+        return ProtectionVerificationResult(
+            protection_status="SL_MISSING",
+            error_code="protection_verification_failed_sl_missing",
+            tp_order_live=True,
+            sl_order_live=False,
+            tp_reduce_only_ok=order_reduce_only(tp_order),
+            sl_reduce_only_ok=False,
+            tp_side_ok=str(tp_order.get("side") or "").upper() == expected_side,
+            sl_side_ok=False,
+            tp_qty_ok=abs(order_quantity(tp_order) - expected_quantity) <= qty_tolerance,
+            sl_qty_ok=False,
+            tp_type_ok=is_tp_algo_order(tp_order),
+            sl_type_ok=False,
+            tp_trigger_ok=abs(order_trigger_price(tp_order) - expected_tp_trigger) <= price_tolerance,
+            sl_trigger_ok=False,
+        )
+
+    tp_reduce_only_ok = order_reduce_only(tp_order)
+    sl_reduce_only_ok = order_reduce_only(sl_order)
+    tp_side_ok = str(tp_order.get("side") or "").upper() == expected_side
+    sl_side_ok = str(sl_order.get("side") or "").upper() == expected_side
+    tp_qty_ok = abs(order_quantity(tp_order) - expected_quantity) <= qty_tolerance
+    sl_qty_ok = abs(order_quantity(sl_order) - expected_quantity) <= qty_tolerance
+    tp_type_ok = is_tp_algo_order(tp_order)
+    sl_type_ok = is_sl_algo_order(sl_order)
+    tp_trigger_ok = abs(order_trigger_price(tp_order) - expected_tp_trigger) <= price_tolerance
+    sl_trigger_ok = abs(order_trigger_price(sl_order) - expected_sl_trigger) <= price_tolerance
+
+    if not tp_reduce_only_ok or not sl_reduce_only_ok:
+        error_code = "protection_verification_failed_reduce_only_false"
+    elif not tp_side_ok or not sl_side_ok:
+        error_code = "protection_verification_failed_side_mismatch"
+    elif not tp_qty_ok or not sl_qty_ok:
+        error_code = "protection_verification_failed_qty_mismatch"
+    elif not tp_type_ok or not sl_type_ok:
+        error_code = "protection_verification_failed_type_mismatch"
+    elif not tp_trigger_ok or not sl_trigger_ok:
+        error_code = "protection_verification_failed_trigger_mismatch"
+    else:
+        error_code = None
+
+    return ProtectionVerificationResult(
+        protection_status="PROTECTED" if error_code is None else "UNPROTECTED",
+        error_code=error_code,
+        tp_order_live=tp_live,
+        sl_order_live=sl_live,
+        tp_reduce_only_ok=tp_reduce_only_ok,
+        sl_reduce_only_ok=sl_reduce_only_ok,
+        tp_side_ok=tp_side_ok,
+        sl_side_ok=sl_side_ok,
+        tp_qty_ok=tp_qty_ok,
+        sl_qty_ok=sl_qty_ok,
+        tp_type_ok=tp_type_ok,
+        sl_type_ok=sl_type_ok,
+        tp_trigger_ok=tp_trigger_ok,
+        sl_trigger_ok=sl_trigger_ok,
+    )
 
 
 def load_dotenv_file(dotenv_path: str | Path = DEFAULT_DOTENV_PATH, *, override: bool = False) -> None:
@@ -147,14 +453,26 @@ class BinanceDemoAdapter:
             return response.json()
 
         message = response.text
+        binance_code: int | None = None
         try:
             payload = response.json()
-            message = json.dumps(payload, sort_keys=True)
+            message = str(payload.get("msg") or payload.get("message") or json.dumps(payload, sort_keys=True))
+            code_raw = payload.get("code")
+            if code_raw is not None:
+                try:
+                    binance_code = int(code_raw)
+                except (TypeError, ValueError):
+                    binance_code = None
         except ValueError:
             pass
 
-        raise RuntimeError(
-            f"Binance API error status={response.status_code} path={path} response={message}"
+        raise BinanceApiError(
+            status_code=response.status_code,
+            binance_code=binance_code,
+            message=message,
+            path=path,
+            response_body=response.text,
+            banned_until=parse_rate_limit_banned_until(message),
         )
 
     def _require_execution_guard(self) -> None:

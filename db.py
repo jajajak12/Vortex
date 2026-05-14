@@ -10,6 +10,7 @@ import sqlite3
 from contextlib import contextmanager
 from datetime import datetime, timezone
 from pathlib import Path
+from typing import Any
 
 from vortex_logger import get_logger
 
@@ -101,6 +102,12 @@ def _row_to_dict(row: sqlite3.Row) -> dict:
 
 def _utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat()
+
+
+def _normalize_state_value(value: Any) -> str:
+    if value is None:
+        return ""
+    return str(value)
 
 
 def _ensure_binance_demo_execution_schema() -> None:
@@ -329,6 +336,15 @@ def get_all_trades(limit: int = 0) -> list[dict]:
     return [_row_to_dict(r) for r in rows]
 
 
+def get_trade(trade_id: int) -> dict | None:
+    with _conn() as con:
+        row = con.execute(
+            "SELECT * FROM trades WHERE id=?",
+            (trade_id,),
+        ).fetchone()
+    return _row_to_dict(row) if row else None
+
+
 def get_stats() -> dict:
     # DUPLICATE trades are excluded from all counts — they never reach status='CLOSED'
     with _conn() as con:
@@ -409,6 +425,21 @@ def list_recent_binance_demo_executions(limit: int = 20) -> list[dict]:
             "SELECT * FROM binance_demo_executions ORDER BY id DESC LIMIT ?",
             (limit,),
         ).fetchall()
+    return [_row_to_dict(r) for r in rows]
+
+
+def list_binance_demo_executions(*, symbol: str | None = None) -> list[dict]:
+    _ensure_binance_demo_execution_schema()
+    with _conn() as con:
+        if symbol:
+            rows = con.execute(
+                "SELECT * FROM binance_demo_executions WHERE symbol=? ORDER BY id ASC",
+                (symbol.upper(),),
+            ).fetchall()
+        else:
+            rows = con.execute(
+                "SELECT * FROM binance_demo_executions ORDER BY id ASC"
+            ).fetchall()
     return [_row_to_dict(r) for r in rows]
 
 
@@ -512,25 +543,91 @@ def upsert_binance_demo_execution(payload: dict) -> dict:
 def set_binance_demo_auto_startup(started_at: str | None = None) -> str:
     _ensure_binance_demo_execution_schema()
     value = started_at or _utc_now_iso()
+    set_binance_demo_runtime_state("last_auto_startup_at", value)
+    return value
+
+
+def get_binance_demo_auto_startup() -> str | None:
+    return get_binance_demo_runtime_state("last_auto_startup_at")
+
+
+def set_binance_demo_runtime_state(key: str, value: Any) -> str:
+    _ensure_binance_demo_execution_schema()
+    normalized = _normalize_state_value(value)
     updated_at = _utc_now_iso()
     with _conn() as con:
         con.execute(
             """
             INSERT INTO binance_demo_execution_state (key, value, updated_at)
-            VALUES ('last_auto_startup_at', ?, ?)
+            VALUES (?, ?, ?)
             ON CONFLICT(key) DO UPDATE SET
                 value=excluded.value,
                 updated_at=excluded.updated_at
             """,
-            (value, updated_at),
+            (key, normalized, updated_at),
         )
-    return value
+    return normalized
 
 
-def get_binance_demo_auto_startup() -> str | None:
+def get_binance_demo_runtime_state(key: str) -> str | None:
     _ensure_binance_demo_execution_schema()
     with _conn() as con:
         row = con.execute(
-            "SELECT value FROM binance_demo_execution_state WHERE key='last_auto_startup_at'"
+            "SELECT value FROM binance_demo_execution_state WHERE key=?",
+            (key,),
         ).fetchone()
     return str(row["value"]) if row else None
+
+
+def get_binance_demo_runtime_states(*keys: str) -> dict[str, str | None]:
+    _ensure_binance_demo_execution_schema()
+    if not keys:
+        return {}
+    placeholders = ",".join("?" for _ in keys)
+    values = {key: None for key in keys}
+    with _conn() as con:
+        rows = con.execute(
+            f"SELECT key, value FROM binance_demo_execution_state WHERE key IN ({placeholders})",
+            tuple(keys),
+        ).fetchall()
+    for row in rows:
+        values[str(row["key"])] = str(row["value"])
+    return values
+
+
+def get_binance_demo_rate_limit_state() -> dict[str, str | None]:
+    return get_binance_demo_runtime_states(
+        "binance_demo_rate_limit_cooldown_until",
+        "binance_demo_rate_limit_last_error",
+        "binance_demo_rate_limit_last_seen_at",
+    )
+
+
+def set_binance_demo_rate_limit_state(
+    *,
+    cooldown_until: str | None,
+    last_error: str | None,
+    last_seen_at: str | None = None,
+) -> dict[str, str | None]:
+    seen_at = last_seen_at or _utc_now_iso()
+    set_binance_demo_runtime_state("binance_demo_rate_limit_cooldown_until", cooldown_until or "")
+    set_binance_demo_runtime_state("binance_demo_rate_limit_last_error", last_error or "")
+    set_binance_demo_runtime_state("binance_demo_rate_limit_last_seen_at", seen_at)
+    return get_binance_demo_rate_limit_state()
+
+
+def update_binance_demo_execution_status(vortex_trade_id: int, status: str, error: str | None = None) -> dict | None:
+    _ensure_binance_demo_execution_schema()
+    updated_at = _utc_now_iso()
+    with _conn() as con:
+        con.execute(
+            """
+            UPDATE binance_demo_executions
+            SET status=?,
+                error=?,
+                updated_at=?
+            WHERE vortex_trade_id=?
+            """,
+            (status, error, updated_at, int(vortex_trade_id)),
+        )
+    return get_binance_demo_execution(int(vortex_trade_id))

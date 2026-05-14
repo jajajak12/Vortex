@@ -14,7 +14,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from db import DB_PATH
-from exchange.binance_demo import BinanceDemoAdapter, load_dotenv_file
+from exchange.binance_demo import BinanceDemoAdapter, load_dotenv_file, verify_protection_orders
 from risk_manager import RiskManager
 
 
@@ -255,6 +255,53 @@ def _cleanup_symbol(adapter: BinanceDemoAdapter, symbol: str) -> dict[str, Any]:
     }
 
 
+def _cleanup_new_leg(
+    adapter: BinanceDemoAdapter,
+    symbol: str,
+    exit_side: str,
+    quantity: Decimal,
+    tp_order_id: str | None,
+    sl_order_id: str | None,
+    entry_executed: bool,
+) -> dict[str, Any]:
+    cancelled_algo_order_ids: list[Any] = []
+    errors: list[str] = []
+    for algo_id in (tp_order_id, sl_order_id):
+        if not algo_id:
+            continue
+        try:
+            adapter.cancel_algo_order(algo_id)
+            cancelled_algo_order_ids.append(algo_id)
+        except Exception as exc:
+            errors.append(f"cancel_algo_order[{algo_id}]={exc}")
+
+    close_order: dict[str, Any] | None = None
+    if entry_executed and quantity > 0:
+        try:
+            close_order = adapter.place_market_order(
+                symbol=symbol,
+                side=exit_side,
+                quantity=_decimal_to_str(quantity),
+                reduce_only=True,
+            )
+        except Exception as exc:
+            errors.append(f"close_leg={exc}")
+
+    final_position_payload = adapter.get_position_risk(symbol)
+    final_position_amt = _position_amt_from_payload(final_position_payload, symbol)
+    final_open_orders = adapter.get_open_orders(symbol)
+    final_open_algo_orders = adapter.get_open_algo_orders(symbol)
+
+    return {
+        "cancelled_order_ids": [],
+        "cancelled_algo_order_ids": cancelled_algo_order_ids,
+        "close_order": close_order,
+        "final_position_amt": final_position_amt,
+        "final_open_orders_count": len(final_open_orders or []) + len(final_open_algo_orders or []),
+        "errors": errors,
+    }
+
+
 def _status_mode(args: argparse.Namespace) -> int:
     trade = _fetch_trade(args.trade_id)
     if trade is None:
@@ -290,6 +337,8 @@ def _execute_mode(args: argparse.Namespace) -> int:
     requested_cap = args.max_notional_usdt
     safe_cap = Decimal("0")
     cleanup_required = False
+    entry_executed = False
+    protection_verified = False
     decision_reason = "not_evaluated"
 
     print("Manual Vortex Demo Bridge Execute")
@@ -407,6 +456,7 @@ def _execute_mode(args: argparse.Namespace) -> int:
             quantity=_decimal_to_str(capped_qty),
             reduce_only=False,
         )
+        entry_executed = True
         cleanup_required = True
         tp_order = adapter.place_take_profit_market_order(
             symbol=symbol,
@@ -422,6 +472,20 @@ def _execute_mode(args: argparse.Namespace) -> int:
             quantity=_decimal_to_str(capped_qty),
             reduce_only=True,
         )
+        verification = verify_protection_orders(
+            algo_orders=adapter.get_open_algo_orders(symbol) or [],
+            tp_order_id=str(tp_order.get("algoId") or ""),
+            sl_order_id=str(sl_order.get("algoId") or ""),
+            expected_side=exit_side,
+            expected_quantity=capped_qty,
+            expected_tp_trigger=rounded_tp,
+            expected_sl_trigger=rounded_sl,
+            qty_tolerance=step_size,
+            price_tolerance=tick_size,
+        )
+        if not verification.is_protected:
+            raise RuntimeError(str(verification.error_code or "protection_verification_failed"))
+        protection_verified = True
         logged_status = "executed"
 
     except Exception as exc:
@@ -434,11 +498,21 @@ def _execute_mode(args: argparse.Namespace) -> int:
         return_code = 0
     finally:
         cleanup_error: str | None = None
-        if cleanup_required and (tp_order is None or sl_order is None):
+        if cleanup_required and not protection_verified:
             try:
-                cleanup_result = _cleanup_symbol(adapter, symbol)
+                cleanup_result = _cleanup_new_leg(
+                    adapter,
+                    symbol,
+                    exit_side,
+                    capped_qty,
+                    str(tp_order.get("algoId")) if tp_order else None,
+                    str(sl_order.get("algoId")) if sl_order else None,
+                    entry_executed,
+                )
                 final_position_amt = cleanup_result["final_position_amt"]
                 open_orders_count = cleanup_result["final_open_orders_count"]
+                if cleanup_result["errors"]:
+                    cleanup_error = "; ".join(cleanup_result["errors"])
                 logged_status = "cleanup_after_partial_failure"
             except Exception as exc:
                 cleanup_error = str(exc)
