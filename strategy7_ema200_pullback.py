@@ -1,5 +1,5 @@
 """
-strategy7_ema200_pullback.py — S7: EMA200 Pullback
+strategy7_ema200_pullback.py — S7: EMA200 Pullback + Volume
 """
 
 from __future__ import annotations
@@ -10,6 +10,8 @@ from strategy_utils import calculate_atr, get_candles
 TF_DETECT = "4h"
 EMA_PERIOD = 200
 ATR_MULT = 2.0
+VOL_LOOKBACK = 20
+VOL_RATIO_MIN = 1.2
 RR = 3.0
 MIN_RR = 2.99
 
@@ -24,9 +26,14 @@ def _ema(values: list[float], period: int) -> float:
     return float(ema)
 
 
+def _avg_volume_ex_current(candles: list[dict], lookback: int = VOL_LOOKBACK) -> float:
+    sample = candles[-(lookback + 1):-1]
+    return sum(c["volume"] for c in sample) / len(sample) if sample else 0.0
+
+
 def scan_ema200_pullback(pair: str) -> list[dict]:
-    candles = get_candles(pair, TF_DETECT, limit=EMA_PERIOD + ATR_PERIOD + 10)
-    if len(candles) < EMA_PERIOD + 2:
+    candles = get_candles(pair, TF_DETECT, limit=EMA_PERIOD + ATR_PERIOD + VOL_LOOKBACK + 10)
+    if len(candles) < EMA_PERIOD + VOL_LOOKBACK + 1:
         return []
 
     cur = candles[-1]
@@ -37,6 +44,11 @@ def scan_ema200_pullback(pair: str) -> list[dict]:
 
     atr = calculate_atr(candles, ATR_PERIOD)
     if atr <= 0:
+        return []
+
+    volume_sma20 = _avg_volume_ex_current(candles, VOL_LOOKBACK)
+    volume_ratio = cur["volume"] / volume_sma20 if volume_sma20 > 0 else 0.0
+    if volume_ratio <= VOL_RATIO_MIN:
         return []
 
     setups: list[dict] = []
@@ -64,6 +76,8 @@ def scan_ema200_pullback(pair: str) -> list[dict]:
                 "in_zone": True,
                 "atr": atr,
                 "ema200": round(ema200, 6),
+                "volume_sma20": round(volume_sma20, 2),
+                "volume_ratio": round(volume_ratio, 2),
                 "planned_rr": RR,
                 "min_rr": MIN_RR,
                 "zone_key": f"S7_{pair}_LONG_{zone_key_base}",
@@ -97,6 +111,8 @@ def scan_ema200_pullback(pair: str) -> list[dict]:
                 "in_zone": True,
                 "atr": atr,
                 "ema200": round(ema200, 6),
+                "volume_sma20": round(volume_sma20, 2),
+                "volume_ratio": round(volume_ratio, 2),
                 "planned_rr": RR,
                 "min_rr": MIN_RR,
                 "zone_key": f"S7_{pair}_SHORT_{zone_key_base}",
